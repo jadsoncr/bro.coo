@@ -1,32 +1,35 @@
 # SaaS Lead Qualifier — Design Spec
 **Data:** 2026-04-20
-**Status:** Aprovado para implementação
+**Status:** Aprovado para implementação (v2 — refinado com SLA + financeiro)
 
 ---
 
 ## 1. Produto em uma frase
 
-Um bot Telegram que qualifica leads automaticamente e entrega ao cliente um dashboard onde ele identifica quem responder primeiro em menos de 3 segundos.
+Sistema que organiza, prioriza e monetiza leads automaticamente — mostrando em tempo real quem atender agora, quanto dinheiro está em risco e onde o processo está falhando.
 
 Ciclo completo:
 ```
-Bot (Telegram) → qualifica → score → dashboard (inbox) → ação do cliente
+Bot (Telegram) → qualifica → score → dashboard (inbox + SLA + financeiro) → ação do cliente
 ```
+
+**Posicionamento:** não é CRM, não é chatbot. É **priorização de receita em tempo real**.
 
 ---
 
 ## 2. Problema que resolve
 
 O cliente hoje recebe leads pelo Telegram sem saber:
-- quem é urgente
-- quem já foi atendido
-- quem abandonou
+- quem é urgente (SLA estoura em silêncio)
+- quanto dinheiro está em risco em cada minuto sem resposta
+- onde no fluxo do bot os leads estão abandonando
 
-O dashboard substitui essa confusão por uma fila priorizada e acionável.
+O dashboard substitui essa confusão por uma fila priorizada, SLA visível e impacto financeiro explícito.
 
 **Métrica de sucesso:**
-- Identificar lead prioritário em < 3 segundos
-- ≥ 70% dos leads quentes visualizados no dia
+- Responder "quem atender agora?" em < 3 segundos
+- Responder "quanto estou perdendo?" em < 5 segundos
+- Responder "onde estou perdendo?" em < 5 segundos
 - Uso diário recorrente pelo cliente
 
 ---
@@ -41,15 +44,16 @@ POST /webhook → middleware resolveTenant(token → tenant_id)
     │
     ▼
 engine.js (stateMachine genérica, lê fluxo do banco)
-    │
+    │  ├── emite eventos: entered_step, abandoned, completed_flow
     ├── Redis      → sessões com TTL 24h (chave: tenant_id:sessao)
     └── BullMQ     → fila de persistência (retry automático)
                         │
                         ▼
                    PostgreSQL
-                   ├── tenants
+                   ├── tenants (+ sla_minutes, ticket_medio, taxa_conversao)
                    ├── leads
                    ├── messages
+                   ├── events (tracking)
                    └── flows (JSONB por tenant)
                         │
                         ▼
@@ -59,25 +63,21 @@ engine.js (stateMachine genérica, lê fluxo do banco)
                    Dashboard (React + shadcn/ui + Tailwind)
 ```
 
-### Por que esse stack
-- **Telegraf**: middleware nativo, async/await, melhor suporte multi-tenant que o handler manual atual
-- **Redis**: resolve perda de sessão no restart (problema real hoje em produção)
-- **BullMQ**: nenhum lead se perde em falha de API — fila com retry visível
-- **Socket.io**: novo lead aparece no dashboard instantaneamente, sem polling
-- **shadcn/ui**: padrão de mercado 2025 para SaaS React (copy-paste, Tailwind, Radix)
-
 ---
 
 ## 4. Banco de dados
 
 ```sql
--- Multi-tenancy
+-- Multi-tenancy com config financeira e SLA
 tenants (
   id UUID PK,
   nome TEXT,
-  bot_token TEXT UNIQUE,  -- chave de resolução de tenant
+  bot_token TEXT UNIQUE,
   plano TEXT DEFAULT 'free',
   ativo BOOLEAN DEFAULT true,
+  sla_minutes INTEGER DEFAULT 15,       -- ← novo
+  ticket_medio DECIMAL DEFAULT 1000,    -- ← novo
+  taxa_conversao DECIMAL DEFAULT 0.2,   -- ← novo
   criado_em TIMESTAMPTZ
 )
 
@@ -87,25 +87,36 @@ leads (
   tenant_id UUID FK tenants,
   nome TEXT,
   telefone TEXT,
-  canal TEXT,           -- telegram | whatsapp
-  fluxo TEXT,           -- trabalhista | familia | cliente | outros
+  canal TEXT,
+  fluxo TEXT,
   score INTEGER DEFAULT 0,
-  prioridade TEXT,      -- FRIO | MEDIO | QUENTE
-  score_breakdown JSONB, -- {"urgencia":3,"intencao":2,...}
-  status TEXT DEFAULT 'novo',  -- novo | em_atendimento | finalizado
+  prioridade TEXT,
+  score_breakdown JSONB,
+  status TEXT DEFAULT 'novo',    -- novo | em_atendimento | finalizado | abandonou
   flag_atencao BOOLEAN DEFAULT false,
+  resumo TEXT,
   criado_em TIMESTAMPTZ,
   atualizado_em TIMESTAMPTZ
 )
 
--- Histórico de mensagens (por lead)
+-- Histórico de mensagens
 messages (
   id UUID PK,
   tenant_id UUID FK tenants,
   lead_id UUID FK leads,
-  direcao TEXT,         -- in | out
+  direcao TEXT,
   conteudo TEXT,
-  estado TEXT,          -- estado da máquina no momento
+  estado TEXT,
+  criado_em TIMESTAMPTZ
+)
+
+-- Eventos de tracking (abandono por pergunta, conversão)  ← novo
+events (
+  id UUID PK,
+  tenant_id UUID FK tenants,
+  lead_id UUID FK leads,
+  event TEXT,       -- entered_step | abandoned | completed_flow
+  step TEXT,        -- estado da máquina (ex: "pergunta_2", "coleta_nome")
   criado_em TIMESTAMPTZ
 )
 
@@ -113,24 +124,18 @@ messages (
 flows (
   id UUID PK,
   tenant_id UUID FK tenants,
-  objetivo TEXT,        -- leads | agendamento | vendas | suporte
-  config JSONB,         -- { "start": { "message": "...", "options": { "1": "proximo_estado" } } }
+  objetivo TEXT DEFAULT 'leads',
+  config JSONB,
   ativo BOOLEAN DEFAULT true
 )
 
--- Sessões em Redis (não no Postgres)
--- chave: "session:{tenant_id}:{sessao}"
--- TTL: 86400 (24h)
--- valor: JSON com estadoAtual, fluxo, score, nome, etc.
+-- Sessões em Redis
+-- chave: "session:{tenant_id}:{sessao}"  TTL: 86400
 ```
-
-**Segurança:** Row-Level Security no Postgres por `tenant_id`. Tokens criptografados.
 
 ---
 
 ## 5. Score inteligente
-
-Modelo atual é simples demais (`impacto + intenção + 1`). Novo modelo:
 
 | Sinal | Pontos |
 |-------|--------|
@@ -140,148 +145,151 @@ Modelo atual é simples demais (`impacto + intenção + 1`). Novo modelo:
 | Clicou em "falar com advogado" | +3 |
 | Salário alto / caso complexo | +2 |
 | Retornou ao menu (hesitação) | -1 |
-| Canal WhatsApp (maior intenção) | +1 |
 
-**Bandas:**
-- `0–2` → FRIO ⚪
-- `3–4` → MÉDIO 🟡
-- `5+`  → QUENTE 🔥
+**Bandas:** `0–2 FRIO` · `3–4 MÉDIO` · `5+ QUENTE 🔥`
 
-**Score é explicado no dashboard** — o cliente vê "QUENTE porque: urgência +3, intenção de processo +2".
+Score é explicado no detalhe do lead.
 
 ---
 
-## 6. Fluxo dinâmico (JSON por tenant)
+## 6. Lógica de SLA
 
-Substituição das `PERGUNTAS` hardcoded. Estrutura:
+```
+tempo_espera = agora - lead.criado_em (em minutos)
+sla_limit    = tenant.sla_minutes
+
+status_sla:
+  🟢 dentro  → tempo_espera < sla_limit * 0.7
+  🟡 atenção → tempo_espera >= sla_limit * 0.7
+  🔴 atrasado → tempo_espera >= sla_limit
+```
+
+---
+
+## 7. Lógica financeira
+
+```
+valor_lead  = tenant.ticket_medio × tenant.taxa_conversao
+potencial   = leads_hoje × valor_lead
+em_risco    = leads_atrasados × valor_lead
+```
+
+Exemplo com config padrão (ticket=1000, conversão=20%):
+- 12 leads hoje → potencial R$ 2.400
+- 4 atrasados → R$ 800 em risco
+
+---
+
+## 8. Tracking de eventos
+
+O engine emite eventos ao persistir:
 
 ```json
-{
-  "start": {
-    "message": "Olá! Como posso te ajudar?\n\n1️⃣ Problema no trabalho\n2️⃣ Família\n3️⃣ Já sou cliente",
-    "options": {
-      "1": "trabalho_status",
-      "2": "familia_tipo",
-      "3": "cliente_identificacao"
-    }
-  },
-  "trabalho_status": {
-    "message": "Você ainda está trabalhando?\n\n1️⃣ Sim\n2️⃣ Não",
-    "options": {
-      "1": "trabalho_tipo",
-      "2": "trabalho_tipo"
-    },
-    "score_rules": {
-      "2": { "urgencia": 1 }
-    }
-  }
-}
+{ "event": "entered_step", "step": "trabalho_status" }
+{ "event": "abandoned",    "step": "coleta_nome" }
+{ "event": "completed_flow" }
 ```
 
-Engine lê o JSON do banco. Fallback para fluxo padrão se tenant não tiver customização.
+Usado pela Camada 3 do dashboard para mostrar abandono por pergunta.
 
 ---
 
-## 7. API REST (endpoints para o dashboard)
+## 9. API REST
 
 ```
-GET    /api/leads                  → lista com filtros (prioridade, status, data)
-GET    /api/leads/:id              → detalhe + histórico de mensagens
+GET    /api/leads                  → lista com filtros (prioridade, status, sla_status)
+GET    /api/leads/:id              → detalhe + mensagens + score_breakdown
 PATCH  /api/leads/:id/status       → { status: "em_atendimento" | "finalizado" }
-GET    /api/metrics                → { hoje, quentes, atendidos, abandonos, funil }
-GET    /api/funil                  → { entrada, responderam, qualificados, finalizados, convertidos }
+GET    /api/metrics                → { hoje, quentes, atrasados, potencial, em_risco, tempo_medio }
+GET    /api/funil                  → abandono por step (da tabela events)
 
 POST   /api/auth/login             → { email, senha } → JWT
-GET    /api/flows                  → fluxo atual do tenant
-PUT    /api/flows                  → atualiza config do fluxo
+GET    /api/tenant/config          → { sla_minutes, ticket_medio, taxa_conversao }
+PATCH  /api/tenant/config          → atualiza config financeira e SLA
 
 WS     /socket.io                  → eventos: lead:new, lead:updated, metrics:update
 ```
 
-Todos os endpoints protegidos por JWT. `tenant_id` extraído do token, nunca do body.
+Todos protegidos por JWT. `tenant_id` extraído do token.
 
 ---
 
-## 8. Dashboard — telas
+## 10. Dashboard — 3 camadas
 
-### Tela 1 — Home / Inbox (tela principal)
-
-Modelo: **Inbox + Prioridade + Ação** (inspirado em Intercom/Zendesk)
+### Camada 1 — Contexto (orientação rápida, topo)
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  🔥 3 leads quentes sem resposta há +2h       [Ver]  │  ← alerta fixo
-├──────────────────────────────────────────────────────┤
-│  Hoje: 12   Quentes: 4   Atendidos: 7   Abandonos: 2 │  ← cards de KPI
-├──────────────────────────────────────────────────────┤
-│  Funil: 12 → 9 → 6 → 4 → 2                          │  ← funil simples
-│          entrada  resp  qualif  final  convertido     │
-├──────────────────────────────────────────────────────┤
-│  [🔥 Quentes]  [Todos]  [Não respondidos]            │  ← 3 filtros apenas
-│                                                      │
-│  🔥 João Silva    Demissão · score 7 · 45min atrás   │
-│  🔥 Ana Costa     Horas extras · score 6 · 1h atrás  │
-│  🟡 Maria Lima    Divórcio · score 4 · 2h atrás      │
-│  ⚪ Pedro Alves   Outro · score 2 · 3h atrás         │
-└──────────────────────────────────────────────────────┘
+Leads hoje: 12   Leads mês: 180   Leads total: 1.240
+💰 Potencial hoje: R$ 2.400   💸 Em risco (SLA): R$ 800
+SLA: 15 min  |  🔴 4 leads atrasados
 ```
 
-Regra de ouro: usuário deve saber o que fazer em **< 3 segundos**.
+Sem gráficos aqui. Só números + alerta de SLA.
 
-### Tela 2 — Detalhe do lead
+---
+
+### Camada 2 — Ação (inbox operacional, centro)
 
 ```
-← voltar
+[🔥 Quentes]  [Todos]  [Não respondidos]
 
-João Silva  🔥 QUENTE  score: 7
-─────────────────────────────────
-Por que QUENTE:  urgência +3 · intenção de processo +2 · salário alto +2
+🔥 Maria   QUENTE   🔴 32 min   [Ver]
+🟡 João    MÉDIO    🟡 18 min   [Ver]
+⚪ Ana     FRIO     🟢 5 min    [Ver]
+```
 
-Jornada:  start → trabalho_status → trabalho_tipo → ... → final_lead
+**Ordenação:** SLA estourado primeiro → prioridade → mais recente
+
+**Detalhe do lead (ao clicar):**
+```
+João Silva  🔥 QUENTE  score: 7  🟡 18 min (SLA: 15 min)
+─────────────────────────────────────────────────────
+Por que QUENTE: urgência +3 · intenção de processo +2 · salário alto +2
+
+Jornada: start → trabalho_status → trabalho_tipo → coleta_nome
 
 Conversa:
   [bot]  Olá! Como posso te ajudar?
   [João] fui demitido sem justa causa
-  [bot]  Você ainda está trabalhando?
-  [João] 2
   ...
 
-──────────────────────────────────
+─────────────────────────────────────────────────────
 [Marcar como atendido]  [Exportar]
 ```
 
-### Tela 3 — Configuração do fluxo (diferencial SaaS)
-
-- Escolher objetivo: Leads / Agendamento / Vendas / Suporte
-- Editar texto das perguntas
-- Definir score mínimo para QUENTE
-- Preview da conversa ao editar
-
 ---
 
-## 9. Ritual do atendimento (o que o produto ensina)
+### Camada 3 — Aprendizado (onde está perdendo dinheiro)
 
-O dashboard induz um comportamento diário:
-
-1. **Abertura** → alerta de leads quentes parados → ação imediata
-2. **Priorização** → fila ordenada por score → QUENTE primeiro sempre
-3. **Atendimento** → abrir lead → ver histórico → marcar como atendido
-4. **Fechamento do dia** → funil do dia → onde perdeu, onde converteu
-5. **Melhoria** → estado com mais drop-off → ajustar pergunta no fluxo
-
-Loop de vício:
 ```
-Trigger (notificação novo lead quente)
-  → Ação (abrir dashboard)
-    → Recompensa (ver lead qualificado, pronto para responder)
-      → Retorno (resposta rápida, conversão)
+Abandono total: 35%
+
+Pontos críticos:
+  Pergunta 2 (trabalho_status)  → 40% abandonam aqui
+  Pergunta 3 (trabalho_tipo)    → 25% abandonam aqui
+
+Qualidade da qualificação:
+  QUENTE → 30% convertem
+  MÉDIO  → 10% convertem
+  FRIO   → 2% convertem
+
+Tempo médio de resposta: 5 min
 ```
 
 ---
 
-## 10. O que NÃO construir agora
+## 11. Tela de configuração (diferencial SaaS)
 
-- WhatsApp oficial (Telegram é camada de validação)
+- `sla_minutes` — tempo máximo de resposta
+- `ticket_medio` — valor médio de um cliente fechado
+- `taxa_conversao` — % de leads que viram clientes
+- Editor do fluxo de perguntas (template + texto configurável)
+
+---
+
+## 12. O que NÃO construir agora
+
+- WhatsApp oficial
 - NLP / IA para texto livre
 - Relatórios PDF / analytics avançado
 - App mobile
@@ -291,24 +299,25 @@ Trigger (notificação novo lead quente)
 
 ---
 
-## 11. Fases de implementação
+## 13. Fases de implementação
 
-### Fase 1 — Fundação (sem isso nada funciona)
-1. PostgreSQL + Prisma com `tenant_id` em tudo
-2. Redis para sessões com TTL 24h
-3. BullMQ para fila de persistência
-4. Middleware de tenant por token do bot
-5. Salvar `messages` (histórico por lead)
+### Fase 1 — Fundação ✅ CONCLUÍDA
+- PostgreSQL + Prisma + tenant_id em tudo
+- Redis para sessões TTL 24h
+- BullMQ fila de persistência
+- Middleware de tenant por token
 
-### Fase 2 — Dashboard operacional
-6. Socket.io para push em tempo real
-7. API REST (leads, metrics, funil, auth)
-8. React + shadcn/ui: Home/Inbox, Detalhe, Filtros
-9. JWT por tenant
+### Fase 2 — Dashboard operacional (próxima)
+1. Adicionar `sla_minutes`, `ticket_medio`, `taxa_conversao` ao schema (migration)
+2. Adicionar tabela `events` ao schema
+3. Engine emite eventos `entered_step`, `abandoned`, `completed_flow`
+4. Socket.io push em tempo real
+5. API REST (leads, metrics, funil, auth, tenant config)
+6. React + shadcn/ui: Camada 1 (contexto), Camada 2 (inbox), detalhe do lead
+7. JWT por tenant
 
 ### Fase 3 — Produto completo
-10. Editor de fluxo JSON por tenant
-11. Score explicado no detalhe do lead
-12. Ritual: alerta de leads quentes parados
-13. Funil com drop-off por estado
-14. Tela de configuração do fluxo
+8. Camada 3: abandono por pergunta, qualidade da qualificação
+9. Editor de fluxo JSON por tenant
+10. Tela de configuração (SLA, financeiro)
+11. Score breakdown visual no detalhe

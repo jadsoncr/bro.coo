@@ -1,0 +1,72 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(uuid())
+  nome      String
+  botToken  String   @unique @map("bot_token")
+  plano     String   @default("free")
+  ativo     Boolean  @default(true)
+  criadoEm  DateTime @default(now()) @map("criado_em")
+
+  leads     Lead[]
+  messages  Message[]
+  flows     Flow[]
+
+  @@map("tenants")
+}
+
+model Lead {
+  id             String   @id @default(uuid())
+  tenantId       String   @map("tenant_id")
+  nome           String?
+  telefone       String
+  canal          String   @default("telegram")
+  fluxo          String?
+  score          Int      @default(0)
+  prioridade     String   @default("FRIO")
+  scoreBreakdown Json?    @map("score_breakdown")
+  status         String   @default("novo")
+  flagAtencao    Boolean  @default(false) @map("flag_atencao")
+  resumo         String?
+  criadoEm       DateTime @default(now()) @map("criado_em")
+  atualizadoEm   DateTime @updatedAt @map("atualizado_em")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  messages Message[]
+
+  @@map("leads")
+}
+
+model Message {
+  id       String   @id @default(uuid())
+  tenantId String   @map("tenant_id")
+  leadId   String   @map("lead_id")
+  direcao  String
+  conteudo String
+  estado   String?
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  @@map("messages")
+}
+
+model Flow {
+  id       String  @id @default(uuid())
+  tenantId String  @map("tenant_id")
+  objetivo String  @default("leads")
+  config   Json
+  ativo    Boolean @default(true)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("flows")
+}

@@ -182,9 +182,17 @@ app.post('/webhook', async (req, res) => {
 
 // Health check para Railway
 app.get('/health', (_req, res) => {
-  const payload = { status: 'ok' };
-  // Expõe token apenas quando não foi configurado via env (setup inicial)
-  if (!process.env.ADMIN_TOKEN) payload._setup = { adminToken: _adminToken, hint: 'Configure ADMIN_TOKEN no Railway para remover este campo.' };
+  const payload = {
+    status: 'ok',
+    env: {
+      storage: process.env.STORAGE_ADAPTER || 'memory',
+      database: !!process.env.DATABASE_URL,
+      redis: !!process.env.REDIS_URL,
+      adminToken: !!process.env.ADMIN_TOKEN,
+      telegramToken: !!process.env.TELEGRAM_TOKEN,
+    },
+  };
+  if (!process.env.ADMIN_TOKEN) payload._setup = { adminToken: _adminToken };
   return res.json(payload);
 });
 

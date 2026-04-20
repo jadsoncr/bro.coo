@@ -17,13 +17,13 @@
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
     "@prisma/adapter-neon": "^7.7.0",
-    "@prisma/client": "^7.7.0",
+    "@prisma/client": "^5.22.0",
     "bullmq": "^5.75.2",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "ioredis": "^5.10.1",
-    "prisma": "^7.7.0",
+    "prisma": "^5.22.0",
     "telegraf": "^4.16.3",
     "uuid": "^13.0.0"
   },

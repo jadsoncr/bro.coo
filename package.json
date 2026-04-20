@@ -13,6 +13,8 @@
     "dev": "npm --prefix dashboard run dev",
     "dev:api": "node server.js",
     "test": "jest --runInBand",
+    "build": "npx prisma generate",
+    "postinstall": "npx prisma generate",
     "start": "node server.js"
   },
   "keywords": [],

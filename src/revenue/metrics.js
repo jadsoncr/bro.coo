@@ -156,12 +156,25 @@ function buildMetrics({ tenant, leads, now = new Date() }) {
   };
 }
 
-async function getTenantOrThrow(tenantId) {
+async function ensureTenant(tenantId) {
+  if (!tenantId) throw new Error('tenantId não informado');
   const prisma = getPrisma();
-  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId } });
-  if (!tenant) throw new Error('Tenant nao encontrado');
-  return tenant;
+  const existing = await prisma.tenant.findUnique({ where: { id: tenantId } });
+  if (existing) return existing;
+
+  // Auto-cria tenant padrão se não existir (permite primeiro uso sem seed manual)
+  console.log(`[ensureTenant] criando tenant ${tenantId}`);
+  return prisma.tenant.create({
+    data: {
+      id: tenantId,
+      nome: 'Tenant Padrão',
+      botToken: `auto-${tenantId}`,
+    },
+  });
 }
+
+// alias mantido para compatibilidade interna
+const getTenantOrThrow = ensureTenant;
 
 async function listLeads(tenantId, filters = {}) {
   const prisma = getPrisma();
@@ -287,6 +300,7 @@ module.exports = {
   normalizeFinalStatus,
   buildMetrics,
   leadDTO,
+  ensureTenant,
   listLeads,
   getLeadDetails,
   getMetrics,

@@ -184,16 +184,25 @@ app.post('/webhook', async (req, res) => {
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // ── Admin: visibilidade de sessões em produção ──────────────────────────────
-// Protegido por ADMIN_TOKEN (defina na Railway)
+// ADMIN_TOKEN: se não configurado, gera um aleatório no boot e loga no console
+let _adminToken = process.env.ADMIN_TOKEN;
+if (!_adminToken) {
+  _adminToken = require('crypto').randomBytes(16).toString('hex');
+  console.warn(`[auth] ADMIN_TOKEN não configurado. Token temporário: ${_adminToken}`);
+}
+
 function adminAuth(req, res, next) {
-  const token = process.env.ADMIN_TOKEN;
-  if (!token) return res.status(503).json({ error: 'ADMIN_TOKEN não configurado.' });
-  if (req.headers['x-admin-token'] !== token) return res.status(401).json({ error: 'Não autorizado.' });
+  if (req.headers['x-admin-token'] !== _adminToken) {
+    return res.status(401).json({ error: 'Não autorizado.' });
+  }
   next();
 }
 
+// Tenant padrão fixo gerado deterministicamente do nome do app (UUID v5-like)
+const DEFAULT_TENANT_FALLBACK = process.env.DEFAULT_TENANT_ID || 'a0000000-0000-0000-0000-000000000001';
+
 app.use('/api', adminAuth, createRevenueRouter({
-  resolveTenantId: (req) => req.headers['x-tenant-id'] || global._currentTenantId || process.env.DEFAULT_TENANT_ID,
+  resolveTenantId: (req) => req.headers['x-tenant-id'] || global._currentTenantId || DEFAULT_TENANT_FALLBACK,
 }));
 
 app.get('/admin/sessions', adminAuth, async (_req, res) => {

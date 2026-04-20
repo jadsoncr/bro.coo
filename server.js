@@ -233,7 +233,7 @@ app.get('/admin/sessions', adminAuth, async (_req, res) => {
 });
 
 
-if (process.env.STORAGE_ADAPTER === 'postgres') {
+if (process.env.STORAGE_ADAPTER === 'postgres' && process.env.REDIS_URL) {
   startWorker();
   console.log('[queue] BullMQ worker iniciado');
 
@@ -242,6 +242,8 @@ if (process.env.STORAGE_ADAPTER === 'postgres') {
     runReativacao().catch(err => console.error('[cron] reativacao error:', err.message));
   });
   console.log('[cron] reativacao de abandonos agendada (a cada hora)');
+} else if (process.env.STORAGE_ADAPTER === 'postgres') {
+  console.log('[queue] REDIS_URL não configurado — worker e cron desativados');
 }
 
 const PORT = process.env.PORT || 3000;

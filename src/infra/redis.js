@@ -5,7 +5,9 @@ let _redis;
 
 function getRedis() {
   if (!_redis) {
-    _redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+    const url = process.env.REDIS_URL;
+    if (!url) throw new Error('REDIS_URL não configurado');
+    _redis = new Redis(url, {
       lazyConnect: true,
       maxRetriesPerRequest: null,
     });

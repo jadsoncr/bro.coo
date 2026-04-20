@@ -2,16 +2,31 @@ require('dotenv').config();
 
 const { resolveTenant } = require('./src/tenants/service');
 const { startWorker } = require('./src/infra/queue');
+const cron = require('node-cron');
 const express = require('express');
 const normalize = require('./src/normalizer');
 const { process: processar } = require('./src/stateMachine');
 const { buildResponse } = require('./src/responder');
 const sessionManager = require('./src/sessionManager');
-const { createAbandono } = require('./src/storage/googleSheets');
+const { createAbandono } = require('./src/storage');
+const { registrarRespostaReativacao, runReativacao } = require('./src/jobs/reativacao');
+const { createRevenueRouter } = require('./src/api/revenue');
 
 const ABANDONO_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 const RESET_TIMEOUT_MS   = 24 * 60 * 60 * 1000; // 24 horas → reinicia sessão
 const ESTADOS_FINAIS = ['pos_final', 'encerramento', 'final_lead', 'final_cliente'];
+
+function parseStartTracking(text, canal) {
+  const match = String(text || '').trim().match(/^\/start\s+([a-z0-9_-]+)/i);
+  if (!match) return null;
+
+  const [origem, ...campanhaParts] = match[1].split('_').filter(Boolean);
+  return {
+    origem: origem || null,
+    campanha: campanhaParts.join('_') || null,
+    canal,
+  };
+}
 
 async function checkAbandono(sess) {
   if (!sess.atualizadoEm) return;
@@ -24,6 +39,7 @@ async function checkAbandono(sess) {
 
   try {
     await createAbandono({
+      tenantId: sess.tenantId || global._currentTenantId,
       sessao: sess.sessao,
       fluxo: sess.fluxo,
       ultimoEstado: sess.estadoAtual,
@@ -31,6 +47,8 @@ async function checkAbandono(sess) {
       prioridade: sess.prioridade,
       nome: sess.nome,
       canalOrigem: sess.canalOrigem,
+      origem: sess.origem,
+      campanha: sess.campanha,
       mensagensEnviadas: sess.mensagensEnviadas || 0,
     });
 
@@ -61,15 +79,29 @@ app.use(express.json());
 
 // Middleware: resolve tenant pelo token do bot (Telegram)
 app.use('/webhook', async (req, res, next) => {
+  global._currentTenantId = null;
   const token = process.env.TELEGRAM_TOKEN;
-  if (process.env.STORAGE_ADAPTER === 'postgres' && token) {
-    const tenant = await resolveTenant(token);
-    if (tenant) {
-      global._currentTenantId = tenant.id;
-      req.tenant = tenant;
-    }
+  if (process.env.STORAGE_ADAPTER !== 'postgres') {
+    return next();
   }
-  next();
+
+  if (!token) {
+    return res.status(503).json({ error: 'TELEGRAM_TOKEN não configurado.' });
+  }
+
+  try {
+    const tenant = await resolveTenant(token);
+    if (!tenant) {
+      return res.status(503).json({ error: 'Tenant não configurado para este bot.' });
+    }
+
+    global._currentTenantId = tenant.id;
+    req.tenant = tenant;
+    return next();
+  } catch (err) {
+    console.error('[tenant middleware error]', err.message);
+    return res.status(503).json({ error: 'Erro ao resolver tenant.' });
+  }
 });
 
 app.post('/webhook', async (req, res) => {
@@ -99,6 +131,10 @@ app.post('/webhook', async (req, res) => {
         await sendTelegram(chatId, msg);
         return res.sendStatus(200);
       }
+      const tracking = parseStartTracking(tgMsg.text, 'telegram');
+      if (tracking) {
+        await sessionManager.updateSession(String(tgMsg.chat.id), tracking);
+      }
       body = {
         sessao: String(tgMsg.chat.id),
         mensagem: tgMsg.text,
@@ -115,6 +151,9 @@ app.post('/webhook', async (req, res) => {
     // Detecta abandono antes de processar nova mensagem
     const sessAntes = await sessionManager.getSession(sessao, canal);
     await checkAbandono(sessAntes);
+    if (process.env.STORAGE_ADAPTER === 'postgres') {
+      await registrarRespostaReativacao({ tenantId: global._currentTenantId, telefone: sessao });
+    }
 
     const resultado = await processar(sessao, mensagem, canal);
 
@@ -150,6 +189,10 @@ function adminAuth(req, res, next) {
   if (req.headers['x-admin-token'] !== token) return res.status(401).json({ error: 'Não autorizado.' });
   next();
 }
+
+app.use('/api', adminAuth, createRevenueRouter({
+  resolveTenantId: (req) => req.headers['x-tenant-id'] || global._currentTenantId || process.env.DEFAULT_TENANT_ID,
+}));
 
 app.get('/admin/sessions', adminAuth, async (_req, res) => {
   const storage = require('./src/storage/inMemory');
@@ -191,6 +234,12 @@ app.get('/admin/sessions', adminAuth, async (_req, res) => {
 if (process.env.STORAGE_ADAPTER === 'postgres') {
   startWorker();
   console.log('[queue] BullMQ worker iniciado');
+
+  cron.schedule('0 * * * *', () => {
+    console.log('[cron] rodando reativacao de abandonos');
+    runReativacao().catch(err => console.error('[cron] reativacao error:', err.message));
+  });
+  console.log('[cron] reativacao de abandonos agendada (a cada hora)');
 }
 
 const PORT = process.env.PORT || 3000;

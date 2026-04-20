@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const http = require('http');
 const { resolveTenant } = require('./src/tenants/service');
 const { startWorker } = require('./src/infra/queue');
 const cron = require('node-cron');
@@ -11,6 +12,7 @@ const sessionManager = require('./src/sessionManager');
 const { createAbandono } = require('./src/storage');
 const { registrarRespostaReativacao, runReativacao } = require('./src/jobs/reativacao');
 const { createRevenueRouter } = require('./src/api/revenue');
+const { initSocket } = require('./src/realtime/socket');
 
 const ABANDONO_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 const RESET_TIMEOUT_MS   = 24 * 60 * 60 * 1000; // 24 horas → reinicia sessão
@@ -243,7 +245,10 @@ if (process.env.STORAGE_ADAPTER === 'postgres') {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const httpServer = http.createServer(app);
+initSocket(httpServer);
+
+httpServer.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`Storage adapter: ${process.env.STORAGE_ADAPTER || 'memory'}`);
 });

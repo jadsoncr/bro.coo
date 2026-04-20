@@ -35,6 +35,7 @@ model Lead {
   status         String   @default("novo")
   flagAtencao    Boolean  @default(false) @map("flag_atencao")
   resumo         String?
+  reativacaoEnviadaEm DateTime? @map("reativacao_enviada_em")
   criadoEm       DateTime @default(now()) @map("criado_em")
   atualizadoEm   DateTime @updatedAt @map("atualizado_em")
 

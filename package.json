@@ -26,6 +26,7 @@
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "ioredis": "^5.10.1",
+    "node-cron": "^4.2.1",
     "prisma": "^5.22.0",
     "telegraf": "^4.16.3",
     "uuid": "^13.0.0"

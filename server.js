@@ -284,10 +284,10 @@ async function start() {
   if (process.env.STORAGE_ADAPTER === 'postgres' && process.env.DATABASE_URL) {
     try {
       const { execSync } = require('child_process');
-      execSync('npx prisma migrate deploy', { stdio: 'inherit' });
-      console.log('[db] migrations aplicadas');
+      execSync('npx prisma db push --accept-data-loss', { stdio: 'inherit' });
+      console.log('[db] schema aplicado');
     } catch (err) {
-      console.error('[db] migrate deploy falhou:', err.message);
+      console.error('[db] db push falhou:', err.message);
     }
   }
 

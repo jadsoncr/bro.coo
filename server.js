@@ -181,7 +181,12 @@ app.post('/webhook', async (req, res) => {
 });
 
 // Health check para Railway
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => {
+  const payload = { status: 'ok' };
+  // Expõe token apenas quando não foi configurado via env (setup inicial)
+  if (!process.env.ADMIN_TOKEN) payload._setup = { adminToken: _adminToken, hint: 'Configure ADMIN_TOKEN no Railway para remover este campo.' };
+  return res.json(payload);
+});
 
 // ── Admin: visibilidade de sessões em produção ──────────────────────────────
 // ADMIN_TOKEN: se não configurado, gera um aleatório no boot e loga no console

@@ -268,11 +268,33 @@ if (process.env.STORAGE_ADAPTER === 'postgres' && process.env.REDIS_URL) {
   console.log('[queue] REDIS_URL não configurado — worker e cron desativados');
 }
 
+// JSON error handler (Express 5 — deve ser registrado antes de listen)
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  console.error('[error]', err.message, err.stack?.split('\n')[1]?.trim());
+  return res.status(500).json({ error: err.message || 'Erro interno.' });
+});
+
 const PORT = process.env.PORT || 3000;
 const httpServer = http.createServer(app);
 initSocket(httpServer);
 
-httpServer.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-  console.log(`Storage adapter: ${process.env.STORAGE_ADAPTER || 'memory'}`);
-});
+async function start() {
+  // Roda migration em produção antes de subir
+  if (process.env.STORAGE_ADAPTER === 'postgres' && process.env.DATABASE_URL) {
+    try {
+      const { execSync } = require('child_process');
+      execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+      console.log('[db] migrations aplicadas');
+    } catch (err) {
+      console.error('[db] migrate deploy falhou:', err.message);
+    }
+  }
+
+  httpServer.listen(PORT, () => {
+    console.log(`Servidor rodando na porta ${PORT}`);
+    console.log(`Storage adapter: ${process.env.STORAGE_ADAPTER || 'memory'}`);
+  });
+}
+
+start();

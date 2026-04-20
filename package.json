@@ -6,6 +6,9 @@
   "directories": {
     "doc": "docs"
   },
+  "prisma": {
+    "seed": "node prisma/seed.js"
+  },
   "scripts": {
     "test": "jest --runInBand",
     "start": "node server.js"

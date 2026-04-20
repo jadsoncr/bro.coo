@@ -6,18 +6,18 @@ describe('scorer', () => {
     expect(score).toBe(7);
   });
 
-  test('score >= 7 é QUENTE', () => {
+  test('score >= 5 é QUENTE', () => {
     const { prioridade } = calcularScore({ impacto: 3, intencao: 3 });
     expect(prioridade).toBe('QUENTE');
   });
 
-  test('score >= 5 e < 7 é MEDIO', () => {
-    const { prioridade } = calcularScore({ impacto: 2, intencao: 2 });
+  test('score >= 3 e < 5 é MEDIO', () => {
+    const { prioridade } = calcularScore({ impacto: 1, intencao: 1 });
     expect(prioridade).toBe('MEDIO');
   });
 
-  test('score < 5 é FRIO', () => {
-    const { prioridade } = calcularScore({ impacto: 1, intencao: 1 });
+  test('score < 3 é FRIO', () => {
+    const { prioridade } = calcularScore({ impacto: 0, intencao: 1 });
     expect(prioridade).toBe('FRIO');
   });
 
@@ -29,5 +29,19 @@ describe('scorer', () => {
   test('com nenhum dado, score é 1', () => {
     const { score } = calcularScore({});
     expect(score).toBe(1);
+  });
+
+  test('classificarLead soma sinais do Revenue OS em escala 0-10', () => {
+    const { score, prioridade, scoreBreakdown } = require('../src/scorer').classificarLead({
+      urgenciaDeclarada: true,
+      intencaoAcao: true,
+      problemaClaro: true,
+      falarAdvogado: true,
+      casoComplexo: true,
+      retornouMenu: true,
+    });
+    expect(score).toBe(10);
+    expect(prioridade).toBe('QUENTE');
+    expect(scoreBreakdown.retornouMenu).toBe(-1);
   });
 });

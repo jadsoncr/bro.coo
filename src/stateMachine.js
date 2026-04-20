@@ -89,6 +89,8 @@ async function persistirFluxo(sessao) {
           urgencia: s.flagAtencao ? 'QUENTE' : 'MEDIO',
           flagAtencao: s.flagAtencao,
           status: 'NOVO',
+          origem: s.origem,
+          campanha: s.campanha,
         });
         return;
       }
@@ -102,6 +104,8 @@ async function persistirFluxo(sessao) {
           canalOrigem: s.canalOrigem,
           conteudo: s.outrosDescricao,
           status: 'NOVO',
+          origem: s.origem,
+          campanha: s.campanha,
         });
         return;
       }
@@ -120,6 +124,8 @@ async function persistirFluxo(sessao) {
         flagAtencao: s.flagAtencao,
         canalOrigem: s.canalOrigem,
         canalPreferido: s.canalPreferido,
+        origem: s.origem,
+        campanha: s.campanha,
         resumo: JSON.stringify({
           status: s.trabalhoStatus,
           tipo: s.trabalhoTipo || s.familiaTipo,

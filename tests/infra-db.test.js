@@ -12,6 +12,7 @@ describe('db singleton', () => {
     expect(prisma.tenant).toBeDefined();
     expect(prisma.lead).toBeDefined();
     expect(prisma.message).toBeDefined();
+    expect(prisma.event).toBeDefined();
     expect(prisma.flow).toBeDefined();
   });
 });

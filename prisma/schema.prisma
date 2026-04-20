@@ -8,39 +8,59 @@ datasource db {
 }
 
 model Tenant {
-  id        String   @id @default(uuid())
-  nome      String
-  botToken  String   @unique @map("bot_token")
-  plano     String   @default("free")
-  ativo     Boolean  @default(true)
-  criadoEm  DateTime @default(now()) @map("criado_em")
+  id             String   @id @default(uuid())
+  nome           String
+  botToken       String   @unique @map("bot_token")
+  plano          String   @default("free")
+  ativo          Boolean  @default(true)
+  slaMinutes     Int      @default(15) @map("sla_minutes")
+  ticketMedio    Decimal  @default(1000) @map("ticket_medio") @db.Decimal(12, 2)
+  taxaConversao  Decimal  @default(0.2) @map("taxa_conversao") @db.Decimal(5, 4)
+  custoMensal    Decimal  @default(0) @map("custo_mensal") @db.Decimal(12, 2)
+  metaMensal     Decimal  @default(0) @map("meta_mensal") @db.Decimal(12, 2)
+  moeda          String   @default("BRL")
+  criadoEm       DateTime @default(now()) @map("criado_em")
 
   leads     Lead[]
   messages  Message[]
+  events    Event[]
   flows     Flow[]
 
   @@map("tenants")
 }
 
 model Lead {
-  id             String   @id @default(uuid())
-  tenantId       String   @map("tenant_id")
-  nome           String?
-  telefone       String
-  canal          String   @default("telegram")
-  fluxo          String?
-  score          Int      @default(0)
-  prioridade     String   @default("FRIO")
-  scoreBreakdown Json?    @map("score_breakdown")
-  status         String   @default("novo")
-  flagAtencao    Boolean  @default(false) @map("flag_atencao")
-  resumo         String?
-  reativacaoEnviadaEm DateTime? @map("reativacao_enviada_em")
-  criadoEm       DateTime @default(now()) @map("criado_em")
-  atualizadoEm   DateTime @updatedAt @map("atualizado_em")
+  id                    String    @id @default(uuid())
+  tenantId              String    @map("tenant_id")
+  nome                  String?
+  telefone              String
+  canal                 String    @default("telegram")
+  origem                String?
+  campanha              String?
+  fluxo                 String?
+  score                 Int       @default(0)
+  prioridade            String    @default("FRIO")
+  scoreBreakdown        Json?     @map("score_breakdown")
+  status                String    @default("NOVO")
+  statusFinal           String?   @map("status_final")
+  origemConversao       String?   @map("origem_conversao")
+  flagAtencao           Boolean   @default(false) @map("flag_atencao")
+  resumo                String?
+  valorEntrada          Decimal   @default(0) @map("valor_entrada") @db.Decimal(12, 2)
+  valorExito            Decimal   @default(0) @map("valor_exito") @db.Decimal(12, 2)
+  valorEstimado         Decimal   @default(0) @map("valor_estimado") @db.Decimal(12, 2)
+  prazoEstimadoDias     Int?      @map("prazo_estimado_dias")
+  abandonedAt           DateTime? @map("abandoned_at")
+  reativacaoEnviadaEm   DateTime? @map("reativacao_enviada_em")
+  reativacaoRespondidaEm DateTime? @map("reativacao_respondida_em")
+  convertidoEm          DateTime? @map("convertido_em")
+  perdidoEm             DateTime? @map("perdido_em")
+  criadoEm              DateTime  @default(now()) @map("criado_em")
+  atualizadoEm          DateTime  @updatedAt @map("atualizado_em")
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   messages Message[]
+  events   Event[]
 
   @@map("leads")
 }
@@ -58,6 +78,23 @@ model Message {
   lead   Lead   @relation(fields: [leadId], references: [id])
 
   @@map("messages")
+}
+
+model Event {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  leadId    String?  @map("lead_id")
+  event     String
+  step      String?
+  metadata  Json?
+  criadoEm  DateTime @default(now()) @map("criado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead?  @relation(fields: [leadId], references: [id])
+
+  @@index([tenantId, event, criadoEm])
+  @@index([leadId])
+  @@map("events")
 }
 
 model Flow {

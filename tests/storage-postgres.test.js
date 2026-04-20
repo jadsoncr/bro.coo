@@ -22,7 +22,7 @@ jest.mock('../src/infra/db', () => {
   };
 });
 
-const { createLead, createMessage, createAbandono } = require('../src/storage/postgres');
+const { createLead, createClient, createOther, createMessage, createAbandono } = require('../src/storage/postgres');
 
 describe('postgres adapter', () => {
   test('createLead persiste com campos obrigatórios', async () => {
@@ -39,6 +39,40 @@ describe('postgres adapter', () => {
     expect(lead.tenantId).toBe('tenant-1');
     expect(lead.prioridade).toBe('QUENTE');
     expect(lead.score).toBe(6);
+  });
+
+  test('createLead aceita payload legado da stateMachine', async () => {
+    const lead = await createLead({
+      tenantId: 'tenant-1',
+      nome: 'Maria',
+      telefone: '5511888',
+      canalOrigem: 'telegram',
+      area: 'trabalhista',
+      status: 'NOVO',
+      urgencia: 'QUENTE',
+    });
+    expect(lead.fluxo).toBe('trabalhista');
+    expect(lead.canal).toBe('telegram');
+    expect(lead.status).toBe('NOVO');
+    expect(lead.prioridade).toBe('QUENTE');
+  });
+
+  test('createClient e createOther mapeiam fluxo corretamente', async () => {
+    const cliente = await createClient({
+      tenantId: 'tenant-1',
+      nome: 'Cliente',
+      telefone: '5511777',
+      conteudo: 'processo 123',
+    });
+    const other = await createOther({
+      tenantId: 'tenant-1',
+      nome: 'Outro',
+      telefone: '5511666',
+      tipo: 'contrato',
+    });
+    expect(cliente.fluxo).toBe('cliente');
+    expect(cliente.prioridade).toBe('MEDIO');
+    expect(other.fluxo).toBe('outros');
   });
 
   test('createMessage persiste mensagem vinculada ao lead', async () => {
@@ -63,5 +97,7 @@ describe('postgres adapter', () => {
       prioridade: 'MEDIO',
     });
     expect(result).toBeDefined();
+    expect(result.statusFinal).toBe('SEM_SUCESSO');
+    expect(result.abandonedAt).toBeInstanceOf(Date);
   });
 });

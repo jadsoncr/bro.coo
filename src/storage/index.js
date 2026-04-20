@@ -8,33 +8,39 @@ const postgres = require('./postgres');
 
 const usePostgres = process.env.STORAGE_ADAPTER === 'postgres';
 
+function tenantId() {
+  return global._currentTenantId || process.env.DEFAULT_TENANT_ID || 'default';
+}
+
+function withTenant(data) {
+  return { ...data, tenantId: data?.tenantId || tenantId() };
+}
+
 module.exports = {
   // Sessões
   getSession: usePostgres
     ? (sessao, canal) => {
-        const tenantId = global._currentTenantId || 'default';
-        return redisSession.getSession(tenantId, sessao, canal);
+        return redisSession.getSession(tenantId(), sessao, canal);
       }
     : memory.getSession,
 
   updateSession: usePostgres
     ? (sessao, data) => {
-        const tenantId = global._currentTenantId || 'default';
-        return redisSession.updateSession(tenantId, sessao, data);
+        return redisSession.updateSession(tenantId(), sessao, data);
       }
     : memory.updateSession,
 
   resetSession: usePostgres
     ? (sessao, canal) => {
-        const tenantId = global._currentTenantId || 'default';
-        return redisSession.resetSession(tenantId, sessao, canal);
+        return redisSession.resetSession(tenantId(), sessao, canal);
       }
     : memory.resetSession,
 
   // Persistência de leads
-  createLead:    usePostgres ? postgres.createLead   : memory.createLead,
-  createClient:  usePostgres ? postgres.createLead   : memory.createClient,
-  createOther:   usePostgres ? postgres.createLead   : memory.createOther,
+  createLead:     usePostgres ? (data) => postgres.createLead(withTenant(data))     : memory.createLead,
+  createClient:   usePostgres ? (data) => postgres.createClient(withTenant(data))   : memory.createClient,
+  createOther:    usePostgres ? (data) => postgres.createOther(withTenant(data))    : memory.createOther,
+  createAbandono: usePostgres ? (data) => postgres.createAbandono(withTenant(data)) : memory.createAbandono,
 
   // Internos (compatibilidade com /admin/sessions)
   _clear:  memory._clear,

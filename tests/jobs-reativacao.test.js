@@ -4,31 +4,40 @@ jest.mock('../src/infra/db', () => {
       id: 'lead-1',
       telefone: '123456789',
       nome: 'Maria',
-      status: 'abandonou',
+      status: 'NOVO',
+      statusFinal: 'SEM_SUCESSO',
       reativacaoEnviadaEm: null,
-      criadoEm: new Date(Date.now() - 24 * 60 * 60 * 1000),
+      abandonedAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
       tenant: { id: 'tenant-1', botToken: 'bot-token-1', nome: 'Escritório X' },
     },
   ];
 
   const mockFindMany = jest.fn(async () => leads);
+  const mockFindFirst = jest.fn(async () => ({ ...leads[0], reativacaoEnviadaEm: new Date() }));
   const mockUpdate = jest.fn(async ({ where, data }) => ({ id: where.id, ...data }));
 
   return {
     getPrisma: jest.fn(() => ({
       lead: {
         findMany: mockFindMany,
+        findFirst: mockFindFirst,
         update: mockUpdate,
       },
     })),
     __mockFindMany: mockFindMany,
+    __mockFindFirst: mockFindFirst,
     __mockUpdate: mockUpdate,
   };
 });
 
 global.fetch = jest.fn(async () => ({ ok: true, json: async () => ({}) }));
 
-const { buscarLeadsParaReativar, enviarReativacao, runReativacao } = require('../src/jobs/reativacao');
+const {
+  buscarLeadsParaReativar,
+  enviarReativacao,
+  registrarRespostaReativacao,
+  runReativacao,
+} = require('../src/jobs/reativacao');
 
 describe('reativacao job', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -60,6 +69,41 @@ describe('reativacao job', () => {
       expect.objectContaining({
         where: { id: 'lead-1' },
         data: expect.objectContaining({ reativacaoEnviadaEm: expect.any(Date) }),
+      })
+    );
+  });
+
+  test('runReativacao não marca lead quando Telegram falha', async () => {
+    const db = require('../src/infra/db');
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    global.fetch.mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+
+    await runReativacao();
+
+    expect(db.__mockUpdate).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  test('registrarRespostaReativacao marca resposta e aquece lead', async () => {
+    const db = require('../src/infra/db');
+    await registrarRespostaReativacao({ tenantId: 'tenant-1', telefone: '123456789' });
+    expect(db.__mockFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          tenantId: 'tenant-1',
+          telefone: '123456789',
+        }),
+      })
+    );
+    expect(db.__mockUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'lead-1' },
+        data: expect.objectContaining({
+          status: 'EM_ATENDIMENTO',
+          statusFinal: null,
+          prioridade: 'QUENTE',
+          origemConversao: 'reativacao',
+        }),
       })
     );
   });

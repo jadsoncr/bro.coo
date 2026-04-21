@@ -10,6 +10,8 @@ function getRedis() {
     _redis = new Redis(url, {
       lazyConnect: true,
       maxRetriesPerRequest: null,
+      enableOfflineQueue: false,
+      retryStrategy: (times) => times > 3 ? null : Math.min(times * 200, 1000),
     });
   }
   return _redis;

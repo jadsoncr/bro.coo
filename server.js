@@ -69,11 +69,19 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 async function sendTelegram(chat_id, text) {
-  await fetch(`${TELEGRAM_API}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id, text }),
-  });
+  try {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8000);
+    await fetch(`${TELEGRAM_API}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id, text }),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
+  } catch (err) {
+    console.error('[sendTelegram] erro (não bloqueante):', err.message);
+  }
 }
 
 const app = express();

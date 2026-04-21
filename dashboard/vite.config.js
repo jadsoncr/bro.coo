@@ -9,4 +9,7 @@ export default defineConfig({
       '/api': 'http://localhost:3000',
     },
   },
+  preview: {
+    allowedHosts: ['brocco-production.up.railway.app'],
+  },
 });

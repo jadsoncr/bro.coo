@@ -115,15 +115,16 @@ app.use('/webhook', async (req, res, next) => {
 });
 
 app.post('/webhook', async (req, res) => {
+  // Telegram exige resposta em < 5s — responde imediatamente e processa em background
+  const isTelegram = !!(req.body.message || req.body.edited_message);
+  if (isTelegram) res.sendStatus(200);
+
   try {
-    // Detectar origem: Telegram ou padrão (n8n/WhatsApp)
-    const isTelegram = !!(req.body.message || req.body.edited_message);
     const tgMsg = req.body.message || req.body.edited_message;
 
     let body = req.body;
     if (isTelegram) {
       if (!tgMsg.text) {
-        // áudio, foto, sticker, etc — tratamento progressivo por nível
         const chatId = String(tgMsg.chat.id);
         const sess = await sessionManager.getSession(chatId, 'telegram');
         const count = (sess.audioCount || 0) + 1;
@@ -138,8 +139,8 @@ app.post('/webhook', async (req, res) => {
           msg = 'Pra te ajudar agora 👍\n\nPreciso que escolha uma opção:\n\n1 - Trabalho\n2 - Família\n3 - Já sou cliente\n4 - Advogado\n5 - Outro';
         }
 
-        await sendTelegram(chatId, msg);
-        return res.sendStatus(200);
+        sendTelegram(chatId, msg);
+        return;
       }
       const tracking = parseStartTracking(tgMsg.text, 'telegram');
       if (tracking) {
@@ -155,10 +156,10 @@ app.post('/webhook', async (req, res) => {
     const { sessao, mensagem, canal } = normalize(body);
 
     if (!sessao) {
-      return res.status(400).json({ error: 'Campo "sessao" é obrigatório.' });
+      if (!isTelegram) return res.status(400).json({ error: 'Campo "sessao" é obrigatório.' });
+      return;
     }
 
-    // Detecta abandono antes de processar nova mensagem
     const sessAntes = await sessionManager.getSession(sessao, canal);
     await checkAbandono(sessAntes);
     if (process.env.STORAGE_ADAPTER === 'postgres') {
@@ -167,7 +168,6 @@ app.post('/webhook', async (req, res) => {
 
     const resultado = await processar(sessao, mensagem, canal);
 
-    // Incrementa contador de mensagens
     await sessionManager.updateSession(sessao, {
       mensagensEnviadas: (sessAntes.mensagensEnviadas || 0) + 1,
       statusSessao: ESTADOS_FINAIS.includes(resultado.estado) ? 'FINALIZADO' : 'ATIVO',
@@ -175,8 +175,8 @@ app.post('/webhook', async (req, res) => {
     const resposta = buildResponse(resultado);
 
     if (isTelegram) {
-      await sendTelegram(tgMsg.chat.id, resposta.message);
-      return res.sendStatus(200);
+      sendTelegram(tgMsg.chat.id, resposta.message);
+      return;
     }
 
     return res.json(resposta);

@@ -181,6 +181,80 @@ router.get('/flow/nodes', async (req, res) => {
   }
 });
 
+// PATCH /owner/flow/nodes/:estado — edit node message/options/keywords
+router.patch('/flow/nodes/:estado', async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const flow = await prisma.flow.findFirst({ where: { tenantId: req.tenantId, ativo: true } });
+    if (!flow) return res.status(404).json({ error: 'Fluxo não encontrado' });
+
+    const node = await prisma.node.findFirst({ where: { flowId: flow.id, estado: req.params.estado } });
+    if (!node) return res.status(404).json({ error: 'Node não encontrado' });
+
+    const { mensagem, opcoes, config } = req.body;
+    const data = {};
+    if (mensagem !== undefined) data.mensagem = mensagem;
+    if (opcoes !== undefined) {
+      // Validate: all proxEstado must exist in the flow
+      const allEstados = new Set((await prisma.node.findMany({ where: { flowId: flow.id }, select: { estado: true } })).map(n => n.estado));
+      for (const op of opcoes) {
+        if (op.proxEstado && !allEstados.has(op.proxEstado)) {
+          return res.status(400).json({ error: `proxEstado "${op.proxEstado}" não existe no fluxo` });
+        }
+      }
+      data.opcoes = opcoes;
+    }
+    if (config !== undefined) {
+      data.opcoes = node.opcoes; // preserve opcoes if only config changes
+      // Merge config into opcoes metadata (stored in node for now)
+    }
+
+    const updated = await prisma.node.update({ where: { id: node.id }, data });
+
+    // Invalidate flow cache
+    const { invalidateAll } = require('../flow/cache');
+    invalidateAll(req.tenantId);
+
+    return res.json({ ok: true, node: updated });
+  } catch (err) {
+    console.error('[owner] PATCH /flow/nodes error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// POST /owner/flow/validate — validate flow integrity
+router.post('/flow/validate', async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const flow = await prisma.flow.findFirst({
+      where: { tenantId: req.tenantId, ativo: true },
+      include: { nodes: true },
+    });
+    if (!flow) return res.json({ valid: false, errors: [{ node: null, message: 'Nenhum fluxo ativo' }] });
+
+    const errors = [];
+    const estados = new Set(flow.nodes.map(n => n.estado));
+
+    if (!estados.has('start')) errors.push({ node: null, message: 'Node "start" obrigatório não encontrado' });
+    if (!flow.nodes.some(n => n.tipo === 'final_lead')) errors.push({ node: null, message: 'Nenhum node final_lead encontrado' });
+
+    for (const node of flow.nodes) {
+      if (node.opcoes && Array.isArray(node.opcoes)) {
+        for (const op of node.opcoes) {
+          if (op.proxEstado && !estados.has(op.proxEstado)) {
+            errors.push({ node: node.estado, message: `Opção aponta para "${op.proxEstado}" que não existe` });
+          }
+        }
+      }
+    }
+
+    return res.json({ valid: errors.length === 0, errors });
+  } catch (err) {
+    console.error('[owner] POST /flow/validate error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // GET /owner/tenant/config — tenant configuration
 router.get('/tenant/config', async (req, res) => {
   try {

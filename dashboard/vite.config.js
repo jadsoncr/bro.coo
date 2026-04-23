@@ -13,6 +13,7 @@ export default defineConfig({
       '/master': 'http://localhost:3000',
       '/webhook': 'http://localhost:3000',
       '/simulate': 'http://localhost:3000',
+      '/engine': 'http://localhost:3000',
       '/health': 'http://localhost:3000',
     },
   },

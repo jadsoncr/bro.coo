@@ -22,6 +22,7 @@ const ownerRouter = require('./src/api/owner');
 const masterRouter = require('./src/api/master');
 const whatsappRouter = require('./src/api/whatsapp');
 const simulateRouter = require('./src/api/simulate');
+const engineRouter = require('./src/api/engine');
 const { startSLATicker } = require('./src/sla/ticker');
 const { startAbandonmentScanner } = require('./src/jobs/abandono');
 const { runBillingEnforcement } = require('./src/jobs/billing');
@@ -128,6 +129,7 @@ app.use('/owner', ownerRouter);
 app.use('/owner', whatsappRouter); // WhatsApp config/test under /owner
 app.use('/master', masterRouter);
 app.use('/simulate', simulateRouter);
+app.use('/engine', engineRouter);
 
 // ── Webhook: resolve tenant pelo token do bot (Telegram) ────────────────────
 // WhatsApp webhook (public, per-tenant URL)

@@ -103,54 +103,11 @@ function mergeTemplateWithSegments(template, segments, options = {}) {
 }
 
 /**
- * Classify a message against segments and return explanation.
+ * @deprecated Use src/engine/classify.js classifyLead instead
  */
 function classifyWithExplanation(message, segments, flowNodes) {
-  const lower = (message || '').toLowerCase();
-  const matchedKeywords = [];
-
-  // Try flow nodes first
-  if (flowNodes && flowNodes.length > 0) {
-    const startNode = flowNodes.find(n => n.estado === 'start');
-    if (startNode?.opcoes) {
-      for (const opcao of startNode.opcoes) {
-        if (opcao.keywords) {
-          for (const kw of opcao.keywords) {
-            if (lower.includes(kw.toLowerCase())) {
-              matchedKeywords.push(kw);
-            }
-          }
-          if (matchedKeywords.length > 0) {
-            return {
-              segmento: opcao.segmento,
-              matchedKeywords,
-              explicacao: `Classificado como ${opcao.segmento} porque contém: "${matchedKeywords.join('", "')}"`,
-              source: 'flow_engine',
-            };
-          }
-        }
-      }
-    }
-  }
-
-  // Fallback: match against segment names
-  for (const seg of (segments || [])) {
-    if (lower.includes(seg.nome?.toLowerCase())) {
-      return {
-        segmento: seg.nome,
-        matchedKeywords: [seg.nome],
-        explicacao: `Classificado como ${seg.nome} porque contém: "${seg.nome}"`,
-        source: 'segment_match',
-      };
-    }
-  }
-
-  return {
-    segmento: 'outros',
-    matchedKeywords: [],
-    explicacao: 'Não foi possível classificar automaticamente. Será encaminhado para triagem.',
-    source: 'fallback',
-  };
+  const { classifyLead } = require('../engine/classify');
+  return classifyLead(message, flowNodes, segments);
 }
 
 module.exports = { mergeTemplateWithSegments, classifyWithExplanation };

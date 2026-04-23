@@ -56,6 +56,7 @@ function actualRevenueValue(lead, tenant) {
 
 function slaStatus(lead, tenant, now = new Date()) {
   if (lead.statusFinal) return 'finalizado';
+  if (lead.primeiraRespostaEm) return 'respondido';
   const elapsed = minutesSince(lead.criadoEm, now);
   const limit = Number(tenant.slaMinutes || 15);
   if (elapsed >= limit) return 'atrasado';

@@ -233,11 +233,14 @@ router.post('/flow/validate', async (req, res) => {
     if (!flow) return res.json({ valid: false, errors: [{ node: null, message: 'Nenhum fluxo ativo' }] });
 
     const errors = [];
+    const warnings = [];
     const estados = new Set(flow.nodes.map(n => n.estado));
 
+    // Required nodes
     if (!estados.has('start')) errors.push({ node: null, message: 'Node "start" obrigatório não encontrado' });
     if (!flow.nodes.some(n => n.tipo === 'final_lead')) errors.push({ node: null, message: 'Nenhum node final_lead encontrado' });
 
+    // Check proxEstado validity
     for (const node of flow.nodes) {
       if (node.opcoes && Array.isArray(node.opcoes)) {
         for (const op of node.opcoes) {
@@ -248,7 +251,39 @@ router.post('/flow/validate', async (req, res) => {
       }
     }
 
-    return res.json({ valid: errors.length === 0, errors });
+    // Reachability check: BFS from start
+    const reachable = new Set();
+    const queue = ['start'];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (reachable.has(current)) continue;
+      reachable.add(current);
+      const node = flow.nodes.find(n => n.estado === current);
+      if (node && node.opcoes) {
+        for (const op of node.opcoes) {
+          if (op.proxEstado && !reachable.has(op.proxEstado)) queue.push(op.proxEstado);
+        }
+      }
+    }
+    for (const node of flow.nodes) {
+      if (!reachable.has(node.estado) && node.estado !== 'fallback' && node.estado !== 'pos_final') {
+        warnings.push({ node: node.estado, message: `Node "${node.estado}" não é alcançável a partir do start` });
+      }
+    }
+
+    // Input nodes without destination
+    for (const node of flow.nodes) {
+      if (node.tipo === 'input' && (!node.opcoes || node.opcoes.length === 0 || !node.opcoes[0]?.proxEstado)) {
+        warnings.push({ node: node.estado, message: `Input node "${node.estado}" sem destino definido` });
+      }
+    }
+
+    // Fallback check
+    if (!estados.has('fallback')) {
+      warnings.push({ node: null, message: 'Nenhum node "fallback" encontrado (recomendado)' });
+    }
+
+    return res.json({ valid: errors.length === 0, errors, warnings });
   } catch (err) {
     console.error('[owner] POST /flow/validate error:', err.message);
     return res.status(500).json({ error: 'Erro interno' });

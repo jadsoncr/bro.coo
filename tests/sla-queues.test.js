@@ -83,10 +83,9 @@ describe('getQueues', () => {
     expect(queues[2].count).toBe(1);
     expect(queues[2].items[0].id).toBe('caso-1');
 
-    // Queue 4: Casos sem atualização
+    // Queue 4: Casos sem atualização (non em_andamento)
     expect(queues[3].name).toBe('Casos sem atualização');
-    expect(queues[3].count).toBe(1);
-    expect(queues[3].items[0].id).toBe('caso-1');
+    expect(queues[3].count).toBe(0); // caso-1 is em_andamento, goes to queue 3 only
   });
 
   test('returns empty array when tenant not found', async () => {

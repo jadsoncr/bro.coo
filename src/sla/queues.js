@@ -73,13 +73,14 @@ async function getQueues(tenantId) {
     select: CASO_SELECT,
   });
 
+  // 3. Contratos enviados sem retorno (casos com status em_andamento e SLA estourado)
   const contratosSemRetorno = openCasos.filter(
-    (caso) => hoursSince(caso.atualizadoEm, now) > slaHoras
+    (caso) => caso.status === 'em_andamento' && hoursSince(caso.atualizadoEm, now) > slaHoras
   );
 
-  // 4. Casos sem atualização
+  // 4. Casos sem atualização (todos os casos abertos com SLA estourado)
   const casosSemAtualizacao = openCasos.filter(
-    (caso) => hoursSince(caso.atualizadoEm, now) > slaHoras
+    (caso) => caso.status !== 'em_andamento' && hoursSince(caso.atualizadoEm, now) > slaHoras
   );
 
   return [

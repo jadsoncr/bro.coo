@@ -231,33 +231,36 @@ app.post('/webhook', async (req, res) => {
 
 // Health check para Railway
 app.get('/health', async (_req, res) => {
-  let status = 'ok';
-  let dbStatus = !!process.env.DATABASE_URL;
+  try {
+    let status = 'ok';
+    let dbStatus = !!process.env.DATABASE_URL;
 
-  if (process.env.STORAGE_ADAPTER === 'postgres') {
-    try {
-      const { getPrisma } = require('./src/infra/db');
-      await getPrisma().$queryRaw`SELECT 1`;
-      dbStatus = 'connected';
-    } catch {
-      dbStatus = 'disconnected';
-      status = 'degraded';
+    if (process.env.STORAGE_ADAPTER === 'postgres') {
+      try {
+        const { getPrisma } = require('./src/infra/db');
+        await getPrisma().$queryRaw`SELECT 1`;
+        dbStatus = 'connected';
+      } catch {
+        dbStatus = 'disconnected';
+        status = 'degraded';
+      }
     }
-  }
 
-  const payload = {
-    status,
-    env: {
-      storage: process.env.STORAGE_ADAPTER || 'memory',
-      database: dbStatus,
-      redis: !!process.env.REDIS_URL,
-      adminToken: !!process.env.ADMIN_TOKEN,
-      telegramToken: !!process.env.TELEGRAM_TOKEN,
-      jwtSecret: !!process.env.JWT_SECRET,
-    },
-  };
-  if (!process.env.ADMIN_TOKEN) payload._setup = { adminToken: _adminToken };
-  return res.json(payload);
+    const payload = {
+      status,
+      env: {
+        storage: process.env.STORAGE_ADAPTER || 'memory',
+        database: dbStatus,
+        redis: !!process.env.REDIS_URL,
+        adminToken: !!process.env.ADMIN_TOKEN,
+        telegramToken: !!process.env.TELEGRAM_TOKEN,
+        jwtSecret: !!process.env.JWT_SECRET,
+      },
+    };
+    return res.json(payload);
+  } catch (err) {
+    return res.status(500).json({ status: 'error', error: err.message });
+  }
 });
 
 // ── Admin: visibilidade de sessões em produção ──────────────────────────────
@@ -364,10 +367,19 @@ async function start() {
   if (process.env.STORAGE_ADAPTER === 'postgres' && process.env.DATABASE_URL) {
     try {
       const { execSync } = require('child_process');
-      execSync('npx prisma db push --accept-data-loss', { stdio: 'inherit' });
+      execSync('npx prisma db push --accept-data-loss', { stdio: 'inherit', timeout: 30000 });
       console.log('[db] schema aplicado');
     } catch (err) {
-      console.error('[db] db push falhou:', err.message);
+      console.error('[db] db push falhou (servidor continua):', err.message);
+    }
+
+    // Ensure Prisma Client is generated
+    try {
+      const { execSync } = require('child_process');
+      execSync('npx prisma generate', { stdio: 'inherit', timeout: 20000 });
+      console.log('[db] prisma client gerado');
+    } catch (err) {
+      console.error('[db] prisma generate falhou:', err.message);
     }
   }
 

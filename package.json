@@ -13,7 +13,7 @@
     "dev": "npm --prefix dashboard run dev",
     "dev:api": "node server.js",
     "test": "jest --runInBand",
-    "build": "npx prisma generate",
+    "build": "npx prisma generate && cd dashboard && npm install && npm run build && cd ..",
     "postinstall": "npx prisma generate",
     "start": "node server.js",
     "seed:demo": "node prisma/seed-demo.js"

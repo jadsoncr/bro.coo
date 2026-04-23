@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { registerAccount, setToken } from '../lib/api.js';
+import { setToken } from '../lib/api.js';
 
 const TEMPLATES = [
   { id: 'advocacia', label: 'Advocacia', icon: '⚖️', segmentos: [
@@ -56,8 +56,25 @@ export default function OnboardingWizard({ onComplete }) {
     if (!conta.nome || !conta.email || !conta.senha) { setError('Preencha todos os campos'); return; }
     setLoading(true); setError('');
     try {
-      const segmento = tipo?.id === 'advocacia' ? 'advocacia' : tipo?.id === 'clinica' ? 'clinica' : 'imobiliaria';
-      const data = await registerAccount({ nome: conta.nome, email: conta.email, senha: conta.senha, empresa: conta.empresa || `Escritório de ${conta.nome}`, segmento, moeda: 'BRL' });
+      const activeSegs = segmentos.filter(s => s.ativo).map(s => ({
+        nome: s.nome, valorMin: s.valorMin, valorMax: s.valorMax, ticketMedio: s.ticketMedio, taxaConversao: s.taxaConversao,
+      }));
+
+      const res = await fetch('/auth/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyName: conta.empresa || `Escritório de ${conta.nome}`,
+          businessType: tipo?.id || 'legal',
+          segments: activeSegs,
+          slaMinutes: sla.lead,
+          slaContratoHoras: sla.contrato,
+          moeda: 'BRL',
+          owner: { nome: conta.nome, email: conta.email, senha: conta.senha },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Erro ao criar conta');
       setToken(data.token);
       onComplete();
     } catch (err) { setError(err.message); }

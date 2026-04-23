@@ -111,6 +111,13 @@ export default function WelcomePage({ onGoToDashboard, onGoToConfig }) {
               </div>
             </div>
 
+            {/* Classification explanation */}
+            {result.explicacao && (
+              <div style={{ background: '#f0f9ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '10px 14px', marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
+                💡 {result.explicacao}
+              </div>
+            )}
+
             {/* Risk block */}
             {result.risco > 0 && (
               <div className="welcome-risk">

@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth } = require('../auth/middleware');
 const { getFlow } = require('../flow/cache');
 const { calcularPrioridade, proximoPasso } = require('../pipeline/constants');
+const { classifyWithExplanation } = require('../templates/merge');
 
 const router = express.Router();
 
@@ -118,6 +119,16 @@ router.post('/', requireAuth, async (req, res) => {
     if (!result) {
       result = classifyMessage(message);
     }
+
+    // Add classification explanation
+    try {
+      const flow = await getFlow(req.tenantId);
+      const { getPrisma } = require('../infra/db');
+      const tenant = await getPrisma().tenant.findUnique({ where: { id: req.tenantId }, select: { segmentos: true } });
+      const explanation = classifyWithExplanation(message, tenant?.segmentos || [], flow?.nodes || []);
+      result.explicacao = explanation.explicacao;
+      result.matchedKeywords = explanation.matchedKeywords;
+    } catch { /* explanation is optional */ }
 
     return res.json(result);
   } catch (err) {

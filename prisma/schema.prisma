@@ -7,61 +7,180 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Tenant {
-  id             String   @id @default(uuid())
-  nome           String
-  botToken       String   @unique @map("bot_token")
-  plano          String   @default("free")
-  ativo          Boolean  @default(true)
-  slaMinutes     Int      @default(15) @map("sla_minutes")
-  ticketMedio    Decimal  @default(1000) @map("ticket_medio") @db.Decimal(12, 2)
-  taxaConversao  Decimal  @default(0.2) @map("taxa_conversao") @db.Decimal(5, 4)
-  custoMensal    Decimal  @default(0) @map("custo_mensal") @db.Decimal(12, 2)
-  metaMensal     Decimal  @default(0) @map("meta_mensal") @db.Decimal(12, 2)
-  moeda          String   @default("BRL")
-  criadoEm       DateTime @default(now()) @map("criado_em")
+// ═══ NOVOS MODELOS ═══
 
-  leads     Lead[]
-  messages  Message[]
-  events    Event[]
-  flows     Flow[]
+model AdminUser {
+  id       String   @id @default(uuid())
+  email    String   @unique
+  token    String   @unique
+  ativo    Boolean  @default(true)
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  logs AdminLog[]
+
+  @@map("admin_users")
+}
+
+model AdminLog {
+  id       String   @id @default(uuid())
+  adminId  String   @map("admin_id")
+  acao     String
+  tenantId String?  @map("tenant_id")
+  metadata Json?
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  admin AdminUser @relation(fields: [adminId], references: [id])
+
+  @@index([adminId, criadoEm])
+  @@index([tenantId, criadoEm])
+  @@map("admin_logs")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  tenantId  String   @map("tenant_id")
+  email     String
+  senhaHash String   @map("senha_hash")
+  nome      String
+  role      String   @default("OPERATOR") // OWNER | OPERATOR
+  ativo     Boolean  @default(true)
+  criadoEm  DateTime @default(now()) @map("criado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, email])
+  @@map("users")
+}
+
+model Caso {
+  id              String    @id @default(uuid())
+  tenantId        String    @map("tenant_id")
+  leadId          String    @unique @map("lead_id")
+  origem          String?
+  segmento        String?
+  tipoProcesso    String?   @map("tipo_processo")
+  tipoContrato    String    @map("tipo_contrato") // entrada, entrada_exito, exito, consulta, outro
+  status          String    @default("em_andamento")
+  valorEntrada    Decimal   @default(0) @map("valor_entrada") @db.Decimal(14, 2)
+  percentualExito Decimal   @default(0) @map("percentual_exito") @db.Decimal(5, 2)
+  valorCausa      Decimal   @default(0) @map("valor_causa") @db.Decimal(14, 2)
+  valorConsulta   Decimal   @default(0) @map("valor_consulta") @db.Decimal(14, 2)
+  currency        String    @default("BRL")
+  valorConvertido Decimal?  @map("valor_convertido") @db.Decimal(14, 2)
+  exchangeRate    Decimal?  @map("exchange_rate") @db.Decimal(10, 6)
+  valorRecebido   Decimal?  @map("valor_recebido") @db.Decimal(14, 2)
+  dataRecebimento DateTime? @map("data_recebimento")
+  criadoEm        DateTime  @default(now()) @map("criado_em")
+  atualizadoEm    DateTime  @updatedAt @map("atualizado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  lead   Lead   @relation(fields: [leadId], references: [id])
+
+  @@index([tenantId, status])
+  @@index([tenantId, dataRecebimento])
+  @@index([tenantId, criadoEm])
+  @@map("casos")
+}
+
+model Node {
+  id       String @id @default(uuid())
+  flowId   String @map("flow_id")
+  estado   String
+  tipo     String // menu, input, final_lead, final_cliente
+  mensagem String
+  opcoes   Json   @default("[]")
+  ordem    Int    @default(0)
+
+  flow Flow @relation(fields: [flowId], references: [id])
+
+  @@unique([flowId, estado])
+  @@map("nodes")
+}
+
+// ═══ MODELOS ALTERADOS ═══
+
+model Tenant {
+  id              String   @id @default(uuid())
+  nome            String
+  botToken        String   @unique @map("bot_token")
+  plano           String   @default("free")
+  ativo           Boolean  @default(true)
+  slaMinutes      Int      @default(15) @map("sla_minutes")
+  ticketMedio     Decimal  @default(1000) @map("ticket_medio") @db.Decimal(12, 2)
+  taxaConversao   Decimal  @default(0.2) @map("taxa_conversao") @db.Decimal(5, 4)
+  custoMensal     Decimal  @default(0) @map("custo_mensal") @db.Decimal(12, 2)
+  metaMensal      Decimal  @default(0) @map("meta_mensal") @db.Decimal(12, 2)
+  moeda           String   @default("BRL")
+  slaContratoHoras Int     @default(48) @map("sla_contrato_horas")
+  moedaBase       String   @default("BRL") @map("moeda_base")
+  flowSource      String   @default("legacy") @map("flow_source") // legacy | dynamic
+  whatsappPhoneId String?  @map("whatsapp_phone_id")
+  whatsappWabaId  String?  @map("whatsapp_waba_id")
+  whatsappToken   String?  @map("whatsapp_token")
+  whatsappVerifyToken String? @map("whatsapp_verify_token")
+  whatsappStatus  String   @default("nao_configurado") @map("whatsapp_status") // nao_configurado | configurado | ativo
+  billingStatus   String   @default("active") @map("billing_status") // active | past_due | suspended | canceled
+  billingDueDate  DateTime? @map("billing_due_date") // data em que billingStatus mudou para past_due
+  criadoEm        DateTime @default(now()) @map("criado_em")
+
+  leads    Lead[]
+  messages Message[]
+  events   Event[]
+  flows    Flow[]
+  users    User[]
+  casos    Caso[]
 
   @@map("tenants")
 }
 
 model Lead {
-  id                    String    @id @default(uuid())
-  tenantId              String    @map("tenant_id")
-  nome                  String?
-  telefone              String
-  canal                 String    @default("telegram")
-  origem                String?
-  campanha              String?
-  fluxo                 String?
-  score                 Int       @default(0)
-  prioridade            String    @default("FRIO")
-  scoreBreakdown        Json?     @map("score_breakdown")
-  status                String    @default("NOVO")
-  statusFinal           String?   @map("status_final")
-  origemConversao       String?   @map("origem_conversao")
-  flagAtencao           Boolean   @default(false) @map("flag_atencao")
-  resumo                String?
-  valorEntrada          Decimal   @default(0) @map("valor_entrada") @db.Decimal(12, 2)
-  valorExito            Decimal   @default(0) @map("valor_exito") @db.Decimal(12, 2)
-  valorEstimado         Decimal   @default(0) @map("valor_estimado") @db.Decimal(12, 2)
-  prazoEstimadoDias     Int?      @map("prazo_estimado_dias")
-  abandonedAt           DateTime? @map("abandoned_at")
-  reativacaoEnviadaEm   DateTime? @map("reativacao_enviada_em")
+  id                     String    @id @default(uuid())
+  tenantId               String    @map("tenant_id")
+  nome                   String?
+  telefone               String
+  canal                  String    @default("telegram")
+  origem                 String?
+  campanha               String?
+  fluxo                  String?
+  score                  Int       @default(0)
+  prioridade             String    @default("FRIO")
+  scoreBreakdown         Json?     @map("score_breakdown")
+  status                 String    @default("NOVO")
+  statusFinal            String?   @map("status_final")
+  origemConversao        String?   @map("origem_conversao")
+  flagAtencao            Boolean   @default(false) @map("flag_atencao")
+  resumo                 String?
+  valorEntrada           Decimal   @default(0) @map("valor_entrada") @db.Decimal(12, 2)
+  valorExito             Decimal   @default(0) @map("valor_exito") @db.Decimal(12, 2)
+  valorEstimado          Decimal   @default(0) @map("valor_estimado") @db.Decimal(12, 2)
+  prazoEstimadoDias      Int?      @map("prazo_estimado_dias")
+  abandonedAt            DateTime? @map("abandoned_at")
+  reativacaoEnviadaEm    DateTime? @map("reativacao_enviada_em")
   reativacaoRespondidaEm DateTime? @map("reativacao_respondida_em")
-  convertidoEm          DateTime? @map("convertido_em")
-  perdidoEm             DateTime? @map("perdido_em")
-  criadoEm              DateTime  @default(now()) @map("criado_em")
-  atualizadoEm          DateTime  @updatedAt @map("atualizado_em")
+  convertidoEm           DateTime? @map("convertido_em")
+  perdidoEm              DateTime? @map("perdido_em")
+  assumidoPorId          String?   @map("assumido_por_id")
+  primeiraRespostaEm     DateTime? @map("primeira_resposta_em")
+  segmento               String?
+  tipoAtendimento        String?   @map("tipo_atendimento")
+  motivoDesistencia      String?   @map("motivo_desistencia")
+  reativacaoCount        Int       @default(0) @map("reativacao_count")
+  estagio                String    @default("novo") // novo | atendimento | qualificado | proposta | negociacao | convertido | perdido
+  intencao               String?   // contratar | informacao | suporte | cliente
+  activityStatus         String    @default("novo") @map("activity_status") // novo | em_atendimento | aguardando_cliente | follow_up | sem_resposta | em_negociacao
+  tempoSemResposta       Int       @default(0) @map("tempo_sem_resposta") // minutos, atualizado pelo SLA ticker
+  criadoEm               DateTime  @default(now()) @map("criado_em")
+  atualizadoEm           DateTime  @updatedAt @map("atualizado_em")
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id])
   messages Message[]
   events   Event[]
+  caso     Caso?
 
+  @@index([tenantId, status])
+  @@index([tenantId, segmento])
+  @@index([tenantId, atualizadoEm])
+  @@index([tenantId, score])
   @@map("leads")
 }
 
@@ -77,17 +196,19 @@ model Message {
   tenant Tenant @relation(fields: [tenantId], references: [id])
   lead   Lead   @relation(fields: [leadId], references: [id])
 
+  @@index([leadId])
+  @@index([leadId, criadoEm])
   @@map("messages")
 }
 
 model Event {
-  id        String   @id @default(uuid())
-  tenantId  String   @map("tenant_id")
-  leadId    String?  @map("lead_id")
-  event     String
-  step      String?
-  metadata  Json?
-  criadoEm  DateTime @default(now()) @map("criado_em")
+  id       String   @id @default(uuid())
+  tenantId String   @map("tenant_id")
+  leadId   String?  @map("lead_id")
+  event    String
+  step     String?
+  metadata Json?
+  criadoEm DateTime @default(now()) @map("criado_em")
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   lead   Lead?  @relation(fields: [leadId], references: [id])
@@ -105,6 +226,7 @@ model Flow {
   ativo    Boolean @default(true)
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
+  nodes  Node[]
 
   @@map("flows")
 }

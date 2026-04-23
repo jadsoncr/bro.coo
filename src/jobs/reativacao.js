@@ -1,9 +1,18 @@
 // src/jobs/reativacao.js
 const { getPrisma } = require('../infra/db');
-const { EVENTS, safeRecordEvent } = require('../events/service');
+const { EVENTS, safeRecordEvent, sleep } = require('../events/service');
 
 const MENSAGEM_REATIVACAO = (nome) =>
   `Olá${nome ? `, ${nome}` : ''}! 👋\n\nNotei que você iniciou um atendimento conosco mas não chegamos a concluir.\n\nPosso te ajudar agora?\n\n1️⃣ Sim, quero continuar\n2️⃣ Não, obrigado`;
+
+/**
+ * Validate phone number: not empty, at least 8 digits after removing non-digits.
+ */
+function isValidPhone(telefone) {
+  if (!telefone) return false;
+  const digits = String(telefone).replace(/\D/g, '');
+  return digits.length >= 8;
+}
 
 async function enviarTelegram(botToken, chatId, text) {
   const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -29,6 +38,7 @@ async function buscarLeadsParaReativar() {
     where: {
       reativacaoEnviadaEm: null,
       reativacaoRespondidaEm: null,
+      reativacaoCount: { lt: 2 },
       OR: [
         {
           statusFinal: 'SEM_SUCESSO',
@@ -56,6 +66,27 @@ async function enviarReativacao(lead) {
   await enviarTelegram(botToken, chatId, MENSAGEM_REATIVACAO(lead.nome));
 }
 
+/**
+ * Send Telegram message with one retry after 2 seconds on failure.
+ * Returns true on success, false if both attempts fail.
+ */
+async function enviarComRetry(lead) {
+  try {
+    await enviarReativacao(lead);
+    return true;
+  } catch (firstErr) {
+    console.warn(`[reativacao] primeiro envio falhou para lead ${lead.id}: ${firstErr.message}, retentando em 2s...`);
+    await sleep(2000);
+    try {
+      await enviarReativacao(lead);
+      return true;
+    } catch (retryErr) {
+      console.error(`[reativacao DLQ] lead ${lead.id}: ${retryErr.message}`);
+      return false;
+    }
+  }
+}
+
 async function runReativacao() {
   const prisma = getPrisma();
   let leads;
@@ -68,12 +99,23 @@ async function runReativacao() {
   }
 
   for (const lead of leads) {
+    // Phone validation — skip leads with invalid phone numbers
+    if (!isValidPhone(lead.telefone)) {
+      console.warn(`[reativacao] telefone inválido para lead ${lead.id}: "${lead.telefone}", pulando`);
+      continue;
+    }
+
+    const sent = await enviarComRetry(lead);
+    if (!sent) continue;
+
     try {
-      await enviarReativacao(lead);
       const enviadaEm = new Date();
       await prisma.lead.update({
         where: { id: lead.id },
-        data: { reativacaoEnviadaEm: enviadaEm },
+        data: {
+          reativacaoEnviadaEm: enviadaEm,
+          reativacaoCount: { increment: 1 },
+        },
       });
       await safeRecordEvent({
         tenantId: lead.tenant.id,
@@ -126,4 +168,11 @@ async function registrarRespostaReativacao({ tenantId, telefone }) {
   return updated;
 }
 
-module.exports = { buscarLeadsParaReativar, enviarReativacao, runReativacao, registrarRespostaReativacao };
+module.exports = {
+  buscarLeadsParaReativar,
+  enviarReativacao,
+  runReativacao,
+  registrarRespostaReativacao,
+  isValidPhone,
+  enviarComRetry,
+};

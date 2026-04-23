@@ -1,0 +1,360 @@
+# Implementation Plan: BRO Resolve SaaS Platform
+
+## Overview
+
+Evolve the existing BRO Resolve system from a single-tenant hardcoded state machine into a multi-tenant SaaS platform with JWT auth, dynamic Flow Engine, Caso financial model, SLA Engine, Attention Loop, and three access levels (MASTER, OWNER, OPERATOR). Implementation is incremental — each task builds on the previous, starting with database schema and auth foundation, then core engines, then API routes, then dashboard evolution.
+
+## Tasks
+
+- [x] 1. Database schema evolution and new models
+  - [x] 1.1 Update Prisma schema with new models (AdminUser, AdminLog, User, Caso, Node) and altered models (Tenant, Lead, Flow)
+    - Add `AdminUser` model with id, email (unique), token (unique), ativo, criadoEm
+    - Add `AdminLog` model with id, adminId, acao, tenantId, metadata (JSON), criadoEm, indexes on (adminId, criadoEm) and (tenantId, criadoEm)
+    - Add `User` model with id, tenantId, email, senhaHash, nome, role (OWNER/OPERATOR), ativo, criadoEm, unique constraint on (tenantId, email)
+    - Add `Caso` model with all fields from design: tipoContrato, valorEntrada(14,2), percentualExito(5,2), valorCausa(14,2), valorConsulta(14,2), valorRecebido(14,2), valorConvertido(14,2), exchangeRate(10,6), currency, status, dataRecebimento; indexes on (tenantId, status), (tenantId, dataRecebimento), (tenantId, criadoEm); unique constraint on leadId
+    - Add `Node` model with id, flowId, estado, tipo, mensagem, opcoes (JSON), ordem; unique constraint on (flowId, estado)
+    - Alter `Tenant`: add slaContratoHoras (default 48), moedaBase (default "BRL"), flowSource (default "legacy")
+    - Alter `Lead`: add assumidoPorId, primeiraRespostaEm, segmento, tipoAtendimento, motivoDesistencia, reativacaoCount (default 0)
+    - Alter `Flow`: add nodes relation to Node
+    - Add indexes on Lead: (tenantId, status), (tenantId, segmento), (tenantId, atualizadoEm), (tenantId, score)
+    - Add indexes on Message: (leadId), (leadId, criadoEm)
+    - Add relations: Tenant → User[], Tenant → Caso[], Lead → Caso (optional 1:1)
+    - _Requirements: 12.1, 12.2, 12.3, 12.4, 12.5, 12.6, 12.7, 12.8, 6.1, 7.1_
+  - [x] 1.2 Create seed script updates for new models
+    - Add seed data for AdminUser (master admin)
+    - Add seed data for User (sample OWNER and OPERATOR per tenant)
+    - Add seed data for sample Flow + Nodes (juridico template)
+    - _Requirements: 7.9, 2.1_
+
+- [x] 2. Auth module and tenant isolation
+  - [x] 2.1 Implement JWT auth service (`src/auth/service.js`)
+    - Implement `login(email, senha)` → verify against User model, return JWT with {userId, tenantId, role}
+    - Implement `verifyToken(token)` → decode and validate JWT, return claims
+    - Implement `verifyAdminToken(token)` → verify against AdminUser table
+    - Add `jsonwebtoken` dependency to package.json
+    - Use JWT_SECRET from environment variable
+    - _Requirements: 1.3, 2.1, 2.2_
+  - [x] 2.2 Implement auth middleware (`src/auth/middleware.js`)
+    - `requireAuth`: extract JWT from Authorization header, verify, set req.userId, req.tenantId, req.role
+    - `requireRole(role)`: check req.role matches, return 403 "Acesso negado" if not
+    - `requireAdmin`: extract admin token from x-admin-token header, verify against AdminUser, set req.adminId
+    - Return 401 "Token inválido ou expirado" for invalid/expired JWT
+    - Return 403 "Acesso negado" for insufficient role
+    - Store tenantId on req object — DO NOT use global._currentTenantId
+    - _Requirements: 1.4, 1.5, 1.6, 1.7, 16.1, 16.2, 16.3, 16.4, 16.5_
+  - [x] 2.3 Implement audit log service (`src/auth/audit.js`)
+    - `recordAudit(adminId, acao, tenantId, metadata)` → insert into AdminLog
+    - Middleware wrapper for master routes that auto-records audit entries
+    - _Requirements: 2.3, 20.5_
+  - [ ]* 2.4 Write property tests for auth module
+    - **Property 2: JWT Claims Completeness** — For any valid user, JWT contains userId, tenantId, role as non-empty strings
+    - **Property 3: Role-Based Access Control** — Wrong role returns 403, invalid JWT returns 401
+    - **Validates: Requirements 1.3, 1.5, 1.6, 1.7, 16.1-16.4**
+  - [ ]* 2.5 Write property test for tenant data isolation
+    - **Property 1: Tenant Data Isolation** — Queries for tenant A never return tenant B records
+    - **Validates: Requirements 1.1**
+  - [ ]* 2.6 Write property test for audit log completeness
+    - **Property 4: Audit Log Completeness** — Every master action produces an AdminLog record with correct fields
+    - **Validates: Requirements 2.3, 20.5**
+
+- [x] 3. Checkpoint — Auth foundation
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 4. Conversion service and Caso model
+  - [x] 4.1 Implement conversion form validation (`src/conversion/validation.js`)
+    - Validate tipoContrato field requirements per design: "entrada" requires valorEntrada > 0; "entrada_exito" requires valorEntrada > 0, percentualExito 0-100, valorCausa > 0; "exito" requires percentualExito 0-100, valorCausa > 0; "consulta" requires valorConsulta > 0
+    - Return descriptive error identifying missing field
+    - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
+  - [x] 4.2 Implement conversion service (`src/conversion/service.js`)
+    - `convert(params)` → validate form, then atomically (Prisma $transaction): create Caso with status "em_andamento" AND update lead statusFinal to "virou_cliente"
+    - Record CONVERTED event after successful transaction
+    - _Requirements: 5.6, 5.7, 6.1_
+  - [x] 4.3 Implement Caso management functions (`src/conversion/caso.js`)
+    - `closeCaso(casoId, {valorRecebido, dataRecebimento, exchangeRate})` → require valorRecebido and dataRecebimento; calculate valorConvertido if currency differs from moedaBase
+    - `getCasosByTenant(tenantId, filters)` → list cases with status filter
+    - `getCasoDetail(tenantId, casoId)` → single case with lead info
+    - _Requirements: 6.2, 6.3, 6.4, 6.5, 6.6_
+  - [ ]* 4.4 Write property tests for conversion validation
+    - **Property 15: Conversion Form Validation** — Each tipoContrato requires exactly the specified fields
+    - **Validates: Requirements 5.1-5.5**
+  - [ ]* 4.5 Write property test for conversion atomicity
+    - **Property 16: Conversion Atomicity** — Caso created AND lead updated atomically, or neither persisted
+    - **Validates: Requirements 5.6, 5.7**
+  - [ ]* 4.6 Write property tests for Caso financials
+    - **Property 7: Real Revenue Calculation** — Sum of valorRecebido where dataRecebimento in period
+    - **Property 8: Open Revenue Calculation** — Sum of estimated values from active Casos
+    - **Property 17: Caso Closing Requires Payment Data** — Closing without valorRecebido or dataRecebimento is rejected
+    - **Property 18: Currency Conversion** — valorConvertido = valorRecebido × exchangeRate when currency differs
+    - **Validates: Requirements 3.3, 3.4, 6.2, 6.3, 6.4, 6.5**
+
+- [x] 5. Checkpoint — Conversion and Caso
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 6. Dynamic Flow Engine
+  - [x] 6.1 Implement Flow Engine (`src/flow/engine.js`)
+    - `process(tenantId, sessao, mensagem, canal)` → load flow definition, resolve current Node, match input, advance state
+    - For tipo "menu": match input against opcoes[].texto → proxEstado, scoreIncrement, segmento, tipoAtendimento
+    - For tipo "input": advance to opcoes[0].proxEstado, fallback to "final_lead"
+    - For tipo "final_lead" / "final_cliente": persist lead data, emit completion event
+    - NO hardcoded state names — all transitions from database
+    - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6_
+  - [x] 6.2 Implement flow cache with TTL invalidation (`src/flow/cache.js`)
+    - Cache active flow definitions in memory with 60s TTL
+    - `invalidateCache(tenantId, flowId)` for explicit invalidation
+    - _Requirements: 7.7, 7.8_
+  - [x] 6.3 Implement flow templates for three business types
+    - Create seed data / migration for: juridico, clinica, imobiliaria flow templates
+    - Each template as Flow + Node records in the database
+    - _Requirements: 7.9_
+  - [x] 6.4 Integrate Flow Engine with webhook handler
+    - Add `flowSource` check in webhook: if tenant.flowSource === 'dynamic', use Flow Engine; else use legacy stateMachine
+    - Ensure coexistence during migration period
+    - Wire Flow Engine output through existing responder and session manager
+    - _Requirements: 7.1, 7.5_
+  - [ ]* 6.5 Write property test for Flow Engine state resolution
+    - **Property 19: Flow Engine State Resolution** — Menu nodes match input to opcoes, input nodes advance to proxEstado or fallback
+    - **Validates: Requirements 7.2, 7.3, 7.4**
+
+- [x] 7. SLA Engine
+  - [x] 7.1 Implement SLA Engine (`src/sla/engine.js`)
+    - `leadSLAStatus(lead, tenant, now)` → "dentro" / "atencao" / "atrasado" / "finalizado" based on primeiraRespostaEm and slaLeadMinutes (70% threshold for atencao)
+    - `casoSLAStatus(caso, tenant, now)` → same logic based on atualizadoEm and slaContratoHoras
+    - `getViolations(tenantId)` → query leads and casos exceeding SLA
+    - `tick(tenantId)` → check all items, generate Alert objects
+    - A lead with primeiraRespostaEm set SHALL never be "atrasado"
+    - _Requirements: 8.1, 8.2, 8.3, 8.6_
+  - [x] 7.2 Implement dynamic queues (`src/sla/queues.js`)
+    - Return four pre-calculated queues: "Leads sem resposta", "Atendimento em andamento", "Contratos enviados sem retorno", "Casos sem atualização"
+    - Each queue populated based on current state of leads and casos
+    - _Requirements: 8.4_
+  - [x] 7.3 Implement SLA ticker (periodic check)
+    - Interval-based check (every 60s) that calls `tick()` for each active tenant
+    - Emit "sla:alert" WebSocket events when violations found
+    - _Requirements: 8.5_
+  - [ ]* 7.4 Write property tests for SLA calculations
+    - **Property 10: Lead SLA Status Calculation** — Correct status based on elapsed time vs slaLeadMinutes thresholds
+    - **Property 11: Caso SLA Status Calculation** — Correct status based on hours vs slaContratoHoras
+    - **Property 12: Alert Generation** — Correct alerts generated for tenant state
+    - **Property 20: Dynamic Queue Membership** — Each queue contains exactly the right items
+    - **Validates: Requirements 8.1, 8.2, 8.3, 8.4, 8.5, 3.9, 3.10, 3.11**
+
+- [x] 8. Checkpoint — Flow Engine and SLA
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 9. Attention Loop and event system
+  - [x] 9.1 Implement Attention Loop (`src/attention/loop.js`)
+    - `handleEvent(event)` → process system event, generate reactions
+    - Emit WebSocket events to tenant rooms: "lead:new", "lead:updated", "lead:converted", "lead:lost", "sla:alert", "caso:updated"
+    - `refreshQueues(tenantId)` → recalculate dynamic queue state
+    - Follow cycle: event → alert → queue update → operator notification
+    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6, 9.7_
+  - [x] 9.2 Evolve WebSocket server for tenant + operator rooms
+    - Require JWT auth on WebSocket connection
+    - Support "join:tenant" (tenantId from JWT) and "join:operator" (userId from JWT)
+    - Emit events only to relevant tenant room (cross-tenant isolation)
+    - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+  - [x] 9.3 Evolve event service with retry guarantees
+    - Replace `safeRecordEvent` fire-and-forget with retry queue
+    - Add dead letter queue for failed events after 3 retries
+    - Integrate event recording with Attention Loop trigger
+    - _Requirements: 9.1, 15.1, 15.2, 15.3_
+  - [ ]* 9.4 Write property test for flow event tracking
+    - **Property 23: Flow Event Tracking Round-Trip** — Every flow transition records correct event type and step name
+    - **Validates: Requirements 15.1, 15.2, 15.3**
+
+- [x] 10. Metrics aggregator evolution
+  - [x] 10.1 Evolve metrics module for Caso-based revenue (`src/revenue/metrics.js`)
+    - Real_Revenue = sum(caso.valorRecebido) where dataRecebimento in period
+    - Open_Revenue = sum(valorEntrada + percentualExito/100 × valorCausa + valorConsulta) from active Casos
+    - Add date range filtering (today, this week, this month, custom)
+    - Conversion percentage = leads with "virou_cliente" / total leads in period
+    - Average first response time = avg(primeiraRespostaEm - criadoEm)
+    - Lucro estimado = realRevenue + openRevenue - custoMensal
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.8, 19.1, 19.2, 19.3, 19.4, 19.5_
+  - [x] 10.2 Implement alert generation in metrics
+    - "leads_sem_resposta" when SLA-exceeded unresponded leads > 0
+    - "contratos_parados" when Caso SLA exceeded > 0
+    - "queda_conversao" when conversion rate < 10%
+    - Each alert includes count of affected items
+    - _Requirements: 3.6, 3.7, 3.9, 3.10, 3.11_
+  - [x] 10.3 Implement global metrics for Master panel
+    - Aggregate across all active tenants: total leads, overall conversion rate, total revenue, average response time
+    - Tenant benchmarks: average conversion rate, average response time, revenue per tenant
+    - Loss patterns: aggregate desistência reasons and abandonment steps
+    - _Requirements: 2.5, 2.6, 20.1, 20.2, 20.3, 20.4_
+  - [ ]* 10.4 Write property tests for metrics
+    - **Property 5: Global Metrics Aggregation** — Global totals equal sum of tenant metrics
+    - **Property 6: Date-Filtered Metrics** — Only records within date range included
+    - **Property 7: Real Revenue Calculation** (if not covered in 4.6)
+    - **Property 8: Open Revenue Calculation** (if not covered in 4.6)
+    - **Property 9: Conversion Percentage** — Correct ratio of converted leads to total
+    - **Property 24: Funnel Aggregation** — Steps sorted by abandonment count descending
+    - **Property 25: Conversion Rate Per Priority Band** — Independent rates for QUENTE, MEDIO, FRIO
+    - **Validates: Requirements 2.5, 2.6, 3.2-3.5, 15.4, 15.5, 19.4, 20.2**
+
+- [x] 11. Checkpoint — Attention Loop and Metrics
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 12. Operator API routes and lead management
+  - [x] 12.1 Create operator route group (`src/api/operator.js`)
+    - `GET /operator/leads` → inbox with dynamic queues (sorted: SLA-exceeded first, then score desc, then oldest)
+    - `GET /operator/leads/:id` → detail with messages and events
+    - `PATCH /operator/leads/:id/assumir` → set status "em_atendimento", record assumidoPorId, set primeiraRespostaEm if null, pause bot
+    - `POST /operator/leads/:id/messages` → save message with origem "humano", emit "lead:updated" WebSocket event; reject empty text with "texto é obrigatório"
+    - `POST /operator/leads/:id/converter` → invoke conversion service with form validation
+    - `PATCH /operator/leads/:id/status` → change lead status (em_atendimento, aguardando_retorno)
+    - `PATCH /operator/leads/:id/desistir` → require motivoDesistencia from allowed list, reject without reason
+    - All routes protected by requireAuth + requireRole('OPERATOR')
+    - _Requirements: 4.1-4.9, 5.1-5.7, 13.1-13.4, 16.1_
+  - [ ]* 12.2 Write property tests for operator routes
+    - **Property 13: Lead Inbox Sort Order** — SLA-exceeded first, then score desc, then oldest
+    - **Property 14: Desistência Requires Reason** — Rejected without valid reason, accepted with valid reason
+    - **Property 28: Empty Input Rejection** — Empty/whitespace message rejected with "texto é obrigatório"
+    - **Property 29: Message Chronological Order** — Messages sorted by criadoEm ascending with direcao and timestamp
+    - **Validates: Requirements 4.2, 4.7, 4.8, 13.3, 13.4**
+
+- [x] 13. Owner API routes
+  - [x] 13.1 Create owner route group (`src/api/owner.js`)
+    - `GET /owner/metrics` → dashboard metrics with date filter (today, this_week, this_month, custom)
+    - `GET /owner/leads` → read-only lead list (no status change controls)
+    - `GET /owner/leads/:id` → read-only lead detail
+    - `GET /owner/casos` → list of Casos for tenant
+    - `GET /owner/casos/:id` → Caso detail
+    - `GET /owner/funil` → funnel analysis (abandonment per step, sorted by highest)
+    - `GET /owner/alerts` → active alerts (leads_sem_resposta, contratos_parados, queda_conversao)
+    - `GET /owner/tenant/config` → tenant configuration
+    - `PATCH /owner/tenant/config` → update config (validate slaLeadMinutes and slaContratoHoras as positive integers)
+    - All routes protected by requireAuth + requireRole('OWNER')
+    - _Requirements: 3.1-3.13, 14.1-14.4, 15.4, 15.5, 16.1, 19.1-19.5_
+  - [ ]* 13.2 Write property test for SLA config validation
+    - **Property 30: SLA Config Validation** — Reject non-positive-integer values for slaLeadMinutes and slaContratoHoras
+    - **Validates: Requirements 14.3**
+
+- [x] 14. Master API routes
+  - [x] 14.1 Create master route group (`src/api/master.js`)
+    - `GET /master/tenants` → list all active tenants with key metrics
+    - `GET /master/tenants/:id/metrics` → detailed metrics for one tenant
+    - `GET /master/global/metrics` → aggregated cross-tenant metrics
+    - `GET /master/global/loss-patterns` → aggregate desistência reasons and abandonment steps
+    - `GET /master/global/benchmarks` → tenant comparison (avg conversion, avg response time, revenue)
+    - `GET /master/audit-log` → audit log entries
+    - All routes protected by requireAdmin middleware
+    - All routes auto-record audit log entries
+    - _Requirements: 2.1-2.6, 20.1-20.5, 16.5_
+
+- [x] 15. Evolve reactivation system
+  - [x] 15.1 Improve reactivation job (`src/jobs/reativacao.js`)
+    - Add `reativacaoCount` tracking — limit max reactivations per lead (e.g., 2)
+    - Add phone number validation before sending
+    - Add retry queue for failed Telegram sends
+    - Decouple cron from Redis dependency
+    - _Requirements: 11.1, 11.2, 11.3, 11.5_
+  - [ ]* 15.2 Write property tests for reactivation
+    - **Property 21: Reactivation Eligibility** — Correct leads selected based on priority and timing rules
+    - **Property 22: Reactivation Response Handling** — Correct status updates on response
+    - **Validates: Requirements 11.1, 11.4**
+
+- [x] 16. Abandonment detection evolution
+  - [x] 16.1 Implement periodic abandonment detection job
+    - Cron job that scans sessions for inactivity (not dependent on next message)
+    - 30min inactivity in non-final state → mark "ABANDONOU", create abandonment record
+    - 24h inactivity → additionally reset session
+    - Update existing lead instead of creating duplicate
+    - Classification based on Node metadata (not hardcoded state lists) when using dynamic flow
+    - _Requirements: 18.1, 18.2, 18.3, 18.4_
+  - [ ]* 16.2 Write property tests for abandonment
+    - **Property 26: Abandonment Detection by Inactivity** — Correct detection at 30min and 24h thresholds
+    - **Property 27: Abandonment Classification** — PRECOCE for initial states, VALIOSO for contact states, MEDIO otherwise
+    - **Validates: Requirements 18.1, 18.2, 18.3**
+
+- [x] 17. Checkpoint — All backend APIs
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 18. Wire server.js with new route groups and middleware
+  - [x] 18.1 Refactor server.js to use new auth and route structure
+    - Replace global._currentTenantId usage with JWT-based req.tenantId
+    - Mount /operator/* routes with requireAuth + requireRole('OPERATOR')
+    - Mount /owner/* routes with requireAuth + requireRole('OWNER')
+    - Mount /master/* routes with requireAdmin
+    - Keep /webhook route with bot-token-based tenant resolution (bots don't use JWT)
+    - Keep /health endpoint without auth
+    - Integrate SLA ticker startup
+    - Integrate Attention Loop with WebSocket
+    - Keep backward compatibility for existing /api/* routes during migration
+    - _Requirements: 1.4, 16.1, 17.1, 17.2, 17.3, 17.4_
+
+- [x] 19. Health check evolution
+  - [x] 19.1 Evolve health check endpoint
+    - Verify database connectivity with test query
+    - Report status of: storage adapter, database connection, Redis connection, Telegram token presence, JWT secret presence
+    - Return "degraded" if database fails, "ok" otherwise
+    - _Requirements: 17.1, 17.2, 17.3, 17.4_
+
+- [x] 20. Dashboard evolution — Operator Interface
+  - [x] 20.1 Create Operator Interface layout (three-column: Filters | Lead list | Chat)
+    - Filter panel with status, priority, SLA status filters
+    - Lead list sorted by SLA-exceeded first, score desc, oldest
+    - Chat/detail panel with full conversation history (cliente/bot/humano messages)
+    - "Assumir atendimento" button
+    - Message input for human replies
+    - Status change controls (em_atendimento, aguardando_retorno, virou_cliente, desistiu)
+    - Desistência reason selector (required)
+    - Conversion Form modal (triggered by "virou_cliente")
+    - Real-time updates via WebSocket (lead:new, lead:updated, sla:alert)
+    - DO NOT show full financial data (Real_Revenue, Open_Revenue, Caso values)
+    - _Requirements: 4.1-4.9, 5.1-5.7, 10.1-10.5, 13.1-13.4_
+  - [x] 20.2 Implement Conversion Form component
+    - tipoContrato selector: entrada, entrada_exito, exito, consulta, outro
+    - Dynamic required fields based on tipoContrato
+    - Client-side validation matching server-side rules
+    - Submit to POST /operator/leads/:id/converter
+    - _Requirements: 5.1-5.5_
+
+- [x] 21. Dashboard evolution — Owner Dashboard
+  - [x] 21.1 Evolve Owner Dashboard with real financial data
+    - Date range filter (today, this week, this month, custom)
+    - KPI cards: Real_Revenue, Open_Revenue, conversion %, leads sem resposta count, casos sem update count, avg response time
+    - Alert section with "Ver problema" navigation to filtered lists
+    - Revenue by origin chart
+    - Leads lost by reason breakdown
+    - Most urgent unattended lead highlight
+    - Lucro estimado display
+    - Reactivation metrics section
+    - Funnel analysis (abandonment per step)
+    - Conversion rate per priority band
+    - Config form for financial parameters
+    - Read-only — NO operator controls
+    - _Requirements: 3.1-3.13, 14.4, 15.4, 15.5, 19.1-19.5_
+
+- [x] 22. Dashboard evolution — Master Panel
+  - [x] 22.1 Create Master Panel
+    - Admin token login
+    - Tenant list with key metrics (lead count, conversion rate, revenue, avg response time)
+    - Global aggregated metrics view
+    - Cross-tenant benchmarks
+    - Loss pattern analysis (by reason, by step)
+    - Drill-down into individual tenant metrics
+    - Audit log viewer
+    - _Requirements: 2.1-2.6, 20.1-20.5_
+
+- [x] 23. Dashboard auth integration
+  - [x] 23.1 Implement login flow and JWT-based API calls
+    - Login page for Owner/Operator (email + password → JWT)
+    - Store JWT in localStorage/sessionStorage
+    - Replace x-admin-token / x-tenant-id headers with Authorization: Bearer JWT
+    - Route to correct interface based on role (OWNER → Owner Dashboard, OPERATOR → Operator Interface)
+    - WebSocket auth with JWT
+    - Reconnection handling (up to 5 attempts)
+    - _Requirements: 1.3, 10.1-10.5, 16.4_
+
+- [x] 24. Final checkpoint — Full integration
+  - Ensure all tests pass, ask the user if questions arise.
+
+## Notes
+
+- Tasks marked with `*` are optional and can be skipped for faster MVP
+- Each task references specific requirements for traceability
+- Checkpoints ensure incremental validation
+- Property tests validate universal correctness properties from the design document (30 properties total)
+- The Flow Engine coexists with the legacy stateMachine.js during migration (tenant.flowSource = 'legacy' | 'dynamic')
+- Implementation language: JavaScript (CommonJS), tests with Jest + fast-check

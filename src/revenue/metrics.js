@@ -1,5 +1,6 @@
 const { getPrisma } = require('../infra/db');
 const { EVENTS, safeRecordEvent } = require('../events/service');
+const { leadSLAStatus, casoSLAStatus } = require('../sla/engine');
 
 const ACTIVE_STATUSES = ['NOVO', 'EM_ATENDIMENTO', 'AGUARDANDO_CLIENTE', 'AGENDADO'];
 const FINAL_STATUSES = ['CONVERTIDO', 'PERDIDO', 'SEM_SUCESSO'];
@@ -83,6 +84,12 @@ function leadDTO(lead, tenant, now = new Date()) {
     valorExito: toNumber(lead.valorExito),
     valorEstimado: toNumber(lead.valorEstimado),
     resumo: lead.resumo || null,
+    estagio: lead.estagio || 'novo',
+    intencao: lead.intencao || null,
+    activityStatus: lead.activityStatus || 'novo',
+    tempoSemResposta: lead.tempoSemResposta || 0,
+    segmento: lead.segmento || null,
+    tipoAtendimento: lead.tipoAtendimento || null,
     criadoEm: lead.criadoEm,
     atualizadoEm: lead.atualizadoEm,
   };
@@ -243,7 +250,20 @@ async function getFunil(tenantId) {
 
 async function getTenantConfig(tenantId) {
   const tenant = await getTenantOrThrow(tenantId);
-  return buildMetrics({ tenant, leads: [] }).tenant;
+  const base = buildMetrics({ tenant, leads: [] }).tenant;
+  // Include WhatsApp fields for config page
+  base.whatsappPhoneId = tenant.whatsappPhoneId || null;
+  base.whatsappWabaId = tenant.whatsappWabaId || null;
+  base.whatsappToken = tenant.whatsappToken ? true : null; // never expose token value
+  base.whatsappVerifyToken = tenant.whatsappVerifyToken || null;
+  base.whatsappStatus = tenant.whatsappStatus || 'nao_configurado';
+  base.tenantId = tenant.id;
+  base.slaContratoHoras = tenant.slaContratoHoras || 48;
+  base.slaLeadMinutes = tenant.slaMinutes || 15;
+  // Billing info
+  base.billingStatus = tenant.billingStatus || 'active';
+  base.billingDueDate = tenant.billingDueDate || null;
+  return base;
 }
 
 async function updateTenantConfig(tenantId, data) {
@@ -292,6 +312,277 @@ async function markLeadOutcome({ tenantId, leadId, statusFinal, origemConversao,
   return updated;
 }
 
+// ═══ Task 10.1: Date range resolution ═══
+
+function startOfWeek(now = new Date()) {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = d.getDay();
+  const diff = day === 0 ? 6 : day - 1; // Monday-based week
+  d.setDate(d.getDate() - diff);
+  return d;
+}
+
+function resolvePeriodo(periodo, now = new Date()) {
+  if (periodo && typeof periodo === 'object' && periodo.start && periodo.end) {
+    return { start: new Date(periodo.start), end: new Date(periodo.end) };
+  }
+  const key = String(periodo || 'mes').toLowerCase();
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  if (key === 'hoje') return { start: startOfDay(now), end: endOfToday };
+  if (key === 'semana') return { start: startOfWeek(now), end: endOfToday };
+  // default: 'mes'
+  return { start: startOfMonth(now), end: endOfToday };
+}
+
+// ═══ Task 10.1: Caso-based owner metrics ═══
+
+async function getOwnerMetrics(tenantId, periodo, now = new Date()) {
+  const prisma = getPrisma();
+  const tenant = await getTenantOrThrow(tenantId);
+  const { start, end } = resolvePeriodo(periodo, now);
+
+  // Query leads within period
+  const leads = await prisma.lead.findMany({
+    where: { tenantId, criadoEm: { gte: start, lte: end } },
+  });
+
+  // Query all Casos for the tenant
+  const casos = await prisma.caso.findMany({ where: { tenantId } });
+
+  // Real Revenue: sum of valorRecebido where dataRecebimento is within period AND valorRecebido is not null
+  const realRevenue = casos
+    .filter(c => c.valorRecebido != null && c.dataRecebimento && new Date(c.dataRecebimento) >= start && new Date(c.dataRecebimento) <= end)
+    .reduce((sum, c) => sum + toNumber(c.valorRecebido), 0);
+
+  // Open Revenue: sum from active Casos (status != 'finalizado' AND valorRecebido is null)
+  const openRevenue = casos
+    .filter(c => c.status !== 'finalizado' && c.valorRecebido == null)
+    .reduce((sum, c) => {
+      return sum + toNumber(c.valorEntrada) + (toNumber(c.percentualExito) / 100) * toNumber(c.valorCausa) + toNumber(c.valorConsulta);
+    }, 0);
+
+  // Conversion rate
+  const totalLeads = leads.length;
+  const convertedLeads = leads.filter(l => l.statusFinal === 'virou_cliente').length;
+  const conversao = totalLeads > 0 ? convertedLeads / totalLeads : 0;
+
+  // Leads sem resposta: primeiraRespostaEm IS NULL AND SLA status is 'atrasado'
+  const leadsSemResposta = leads.filter(l => {
+    if (l.primeiraRespostaEm) return false;
+    if (l.statusFinal) return false;
+    return leadSLAStatus(l, tenant, now) === 'atrasado';
+  }).length;
+
+  // Casos sem update: SLA status is 'atrasado'
+  const casosSemUpdate = casos.filter(c => casoSLAStatus(c, tenant, now) === 'atrasado').length;
+
+  // Tempo médio de resposta (minutes)
+  const leadsComResposta = leads.filter(l => l.primeiraRespostaEm);
+  const tempoMedioResposta = leadsComResposta.length > 0
+    ? leadsComResposta.reduce((sum, l) => sum + minutesSince(l.criadoEm, new Date(l.primeiraRespostaEm)), 0) / leadsComResposta.length
+    : 0;
+
+  // Lucro estimado
+  const custoMensal = toNumber(tenant.custoMensal);
+  const lucroEstimado = realRevenue + openRevenue - custoMensal;
+
+  const metrics = {
+    realRevenue,
+    openRevenue,
+    conversao,
+    leadsSemResposta,
+    casosSemUpdate,
+    tempoMedioResposta,
+    lucroEstimado,
+    totalLeads,
+    periodo: { start, end },
+  };
+
+  // ═══ Conversion by priority band ═══
+  const priorityBands = ['QUENTE', 'MEDIO', 'FRIO'];
+  const conversionByPriority = priorityBands.map(p => {
+    const bandLeads = leads.filter(l => l.prioridade === p);
+    const bandConverted = bandLeads.filter(l => l.statusFinal === 'virou_cliente').length;
+    return {
+      priority: p,
+      total: bandLeads.length,
+      converted: bandConverted,
+      rate: bandLeads.length > 0 ? bandConverted / bandLeads.length : 0,
+    };
+  }).filter(b => b.total > 0);
+
+  // ═══ Revenue by origin ═══
+  const originMap = {};
+  for (const c of casos.filter(c => c.valorRecebido != null && c.dataRecebimento && new Date(c.dataRecebimento) >= start && new Date(c.dataRecebimento) <= end)) {
+    const origin = c.origem || 'Desconhecida';
+    originMap[origin] = (originMap[origin] || 0) + toNumber(c.valorRecebido);
+  }
+  const revenueByOrigin = Object.entries(originMap)
+    .map(([origin, revenue]) => ({ origin, revenue }))
+    .sort((a, b) => b.revenue - a.revenue);
+
+  // ═══ Leads lost by reason ═══
+  const reasonMap = {};
+  for (const l of leads.filter(l => l.motivoDesistencia)) {
+    const reason = l.motivoDesistencia;
+    reasonMap[reason] = (reasonMap[reason] || 0) + 1;
+  }
+  const lostByReason = Object.entries(reasonMap)
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // ═══ Em risco (€ value of SLA-exceeded leads) ═══
+  const emRisco = leads
+    .filter(l => !l.primeiraRespostaEm && !l.statusFinal && leadSLAStatus(l, tenant, now) === 'atrasado')
+    .reduce((sum, l) => sum + leadRevenueValue(l, tenant), 0);
+
+  // Pipeline counts by stage
+  const PIPELINE_STAGES = ['novo', 'atendimento', 'qualificado', 'proposta', 'convertido', 'perdido'];
+  const pipeline = PIPELINE_STAGES.map(stage => ({
+    stage,
+    count: leads.filter(l => (l.estagio || 'novo') === stage).length,
+    valor: leads.filter(l => (l.estagio || 'novo') === stage).reduce((sum, l) => sum + leadRevenueValue(l, tenant), 0),
+  }));
+
+  // Task 10.2: Include alerts
+  const alertas = buildAlerts(tenantId, { ...metrics, emRisco });
+
+  return { ...metrics, conversionByPriority, revenueByOrigin, lostByReason, emRisco, pipeline, alertas };
+}
+
+// ═══ Task 10.2: Alert generation ═══
+
+function buildAlerts(tenantId, metrics) {
+  const alerts = [];
+
+  if (metrics.leadsSemResposta > 0) {
+    const valorEmRisco = metrics.emRisco || 0;
+    const valorStr = valorEmRisco > 0 ? ` — €${Math.round(valorEmRisco).toLocaleString()} em risco` : '';
+    alerts.push({
+      type: 'leads_sem_resposta',
+      count: metrics.leadsSemResposta,
+      severity: metrics.leadsSemResposta >= 5 ? 'critical' : 'warning',
+      message: `⚠️ ${metrics.leadsSemResposta} lead(s) sem resposta${valorStr}. Dinheiro parado esperando ação.`,
+    });
+  }
+
+  if (metrics.casosSemUpdate > 0) {
+    alerts.push({
+      type: 'contratos_parados',
+      count: metrics.casosSemUpdate,
+      severity: metrics.casosSemUpdate >= 3 ? 'critical' : 'warning',
+      message: `📋 ${metrics.casosSemUpdate} contrato(s) parado(s) sem retorno. Receita travada.`,
+    });
+  }
+
+  if (metrics.conversao < 0.10 && metrics.totalLeads > 0) {
+    alerts.push({
+      type: 'queda_conversao',
+      count: metrics.totalLeads,
+      severity: 'warning',
+      message: `📉 Conversão em ${(metrics.conversao * 100).toFixed(1)}% — você está deixando dinheiro na mesa.`,
+    });
+  }
+
+  return alerts;
+}
+
+// ═══ Task 10.3: Global metrics for Master panel ═══
+
+async function getGlobalMetrics() {
+  const prisma = getPrisma();
+  const tenants = await prisma.tenant.findMany({ where: { ativo: true } });
+
+  const tenantMetrics = [];
+  let totalLeads = 0;
+  let totalConverted = 0;
+  let totalRevenue = 0;
+  let totalResponseTime = 0;
+  let totalWithResponse = 0;
+
+  for (const tenant of tenants) {
+    const leads = await prisma.lead.findMany({ where: { tenantId: tenant.id } });
+    const casos = await prisma.caso.findMany({ where: { tenantId: tenant.id } });
+
+    const tLeads = leads.length;
+    const tConverted = leads.filter(l => l.statusFinal === 'virou_cliente').length;
+    const tConversao = tLeads > 0 ? tConverted / tLeads : 0;
+    const tRevenue = casos
+      .filter(c => c.valorRecebido != null && c.dataRecebimento)
+      .reduce((sum, c) => sum + toNumber(c.valorRecebido), 0);
+
+    const leadsComResposta = leads.filter(l => l.primeiraRespostaEm);
+    const tAvgResponse = leadsComResposta.length > 0
+      ? leadsComResposta.reduce((sum, l) => sum + minutesSince(l.criadoEm, new Date(l.primeiraRespostaEm)), 0) / leadsComResposta.length
+      : 0;
+
+    totalLeads += tLeads;
+    totalConverted += tConverted;
+    totalRevenue += tRevenue;
+    totalResponseTime += leadsComResposta.reduce((sum, l) => sum + minutesSince(l.criadoEm, new Date(l.primeiraRespostaEm)), 0);
+    totalWithResponse += leadsComResposta.length;
+
+    tenantMetrics.push({
+      id: tenant.id,
+      nome: tenant.nome,
+      leads: tLeads,
+      conversao: tConversao,
+      revenue: tRevenue,
+      avgResponseTime: tAvgResponse,
+    });
+  }
+
+  return {
+    global: {
+      totalLeads,
+      overallConversao: totalLeads > 0 ? totalConverted / totalLeads : 0,
+      totalRevenue,
+      avgResponseTime: totalWithResponse > 0 ? totalResponseTime / totalWithResponse : 0,
+    },
+    tenants: tenantMetrics,
+  };
+}
+
+async function getLossPatterns(tenantId) {
+  const prisma = getPrisma();
+  const leadWhere = tenantId ? { tenantId } : {};
+  const eventWhere = tenantId
+    ? { tenantId, event: EVENTS.ABANDONED }
+    : { event: EVENTS.ABANDONED };
+
+  // Group desistência reasons
+  const leads = await prisma.lead.findMany({
+    where: { ...leadWhere, motivoDesistencia: { not: null } },
+    select: { motivoDesistencia: true },
+  });
+
+  const reasonMap = {};
+  for (const lead of leads) {
+    const reason = lead.motivoDesistencia;
+    reasonMap[reason] = (reasonMap[reason] || 0) + 1;
+  }
+  const byReason = Object.entries(reasonMap)
+    .map(([reason, count]) => ({ reason, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // Group abandonment steps from events
+  const events = await prisma.event.findMany({
+    where: eventWhere,
+    select: { step: true },
+  });
+
+  const stepMap = {};
+  for (const evt of events) {
+    const step = evt.step || 'desconhecido';
+    stepMap[step] = (stepMap[step] || 0) + 1;
+  }
+  const byStep = Object.entries(stepMap)
+    .map(([step, count]) => ({ step, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return { byReason, byStep };
+}
+
 module.exports = {
   ACTIVE_STATUSES,
   FINAL_STATUSES,
@@ -309,4 +600,12 @@ module.exports = {
   updateTenantConfig,
   updateLeadStatus,
   markLeadOutcome,
+  // Task 10.1
+  resolvePeriodo,
+  getOwnerMetrics,
+  // Task 10.2
+  buildAlerts,
+  // Task 10.3
+  getGlobalMetrics,
+  getLossPatterns,
 };

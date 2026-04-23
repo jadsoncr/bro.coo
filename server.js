@@ -7,12 +7,29 @@ const cron = require('node-cron');
 const express = require('express');
 const normalize = require('./src/normalizer');
 const { process: processar } = require('./src/stateMachine');
+const { process: processFlow } = require('./src/flow/engine');
 const { buildResponse } = require('./src/responder');
 const sessionManager = require('./src/sessionManager');
 const { createAbandono } = require('./src/storage');
 const { registrarRespostaReativacao, runReativacao } = require('./src/jobs/reativacao');
 const { createRevenueRouter } = require('./src/api/revenue');
 const { initSocket } = require('./src/realtime/socket');
+
+// ── New SaaS route groups ───────────────────────────────────────────────────
+const authRouter = require('./src/api/auth');
+const operatorRouter = require('./src/api/operator');
+const ownerRouter = require('./src/api/owner');
+const masterRouter = require('./src/api/master');
+const whatsappRouter = require('./src/api/whatsapp');
+const simulateRouter = require('./src/api/simulate');
+const { startSLATicker } = require('./src/sla/ticker');
+const { startAbandonmentScanner } = require('./src/jobs/abandono');
+const { runBillingEnforcement } = require('./src/jobs/billing');
+
+// ── JWT_SECRET check ─────────────────────────────────────────────────────────
+if (!process.env.JWT_SECRET) {
+  console.warn('[auth] JWT_SECRET não configurado. Rotas JWT (/operator, /owner, /auth) não funcionarão. Legacy admin-token auth continua ativo.');
+}
 
 const ABANDONO_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutos
 const RESET_TIMEOUT_MS   = 24 * 60 * 60 * 1000; // 24 horas → reinicia sessão
@@ -41,7 +58,7 @@ async function checkAbandono(sess) {
 
   try {
     await createAbandono({
-      tenantId: sess.tenantId || global._currentTenantId,
+      tenantId: sess.tenantId || (global._currentReqTenant ? global._currentReqTenant.id : global._currentTenantId),
       sessao: sess.sessao,
       fluxo: sess.fluxo,
       ultimoEstado: sess.estadoAtual,
@@ -87,7 +104,24 @@ async function sendTelegram(chat_id, text) {
 const app = express();
 app.use(express.json());
 
-// Middleware: resolve tenant pelo token do bot (Telegram)
+// ── New SaaS route groups (JWT-based, req.tenantId from token) ──────────────
+// These routes use JWT auth — they NEVER touch global._currentTenantId
+app.use('/auth', authRouter);
+const registerRouter = require('./src/api/register');
+app.use('/auth', registerRouter);
+app.use('/operator', operatorRouter);
+app.use('/owner', ownerRouter);
+app.use('/owner', whatsappRouter); // WhatsApp config/test under /owner
+app.use('/master', masterRouter);
+app.use('/simulate', simulateRouter);
+
+// ── Webhook: resolve tenant pelo token do bot (Telegram) ────────────────────
+// WhatsApp webhook (public, per-tenant URL)
+app.use('/webhook', whatsappRouter);
+
+// LEGACY: The webhook middleware still sets global._currentTenantId for backward
+// compatibility with the legacy stateMachine. This will be removed when all
+// tenants migrate to dynamic flow (tenant.flowSource = 'dynamic').
 app.use('/webhook', async (req, res, next) => {
   global._currentTenantId = null;
   const token = process.env.TELEGRAM_TOKEN;
@@ -106,6 +140,7 @@ app.use('/webhook', async (req, res, next) => {
     }
 
     global._currentTenantId = tenant.id;
+    global._currentReqTenant = tenant;
     req.tenant = tenant;
     return next();
   } catch (err) {
@@ -163,10 +198,16 @@ app.post('/webhook', async (req, res) => {
     const sessAntes = await sessionManager.getSession(sessao, canal);
     await checkAbandono(sessAntes);
     if (process.env.STORAGE_ADAPTER === 'postgres') {
-      await registrarRespostaReativacao({ tenantId: global._currentTenantId, telefone: sessao });
+      const tenantId = req.tenant ? req.tenant.id : global._currentTenantId;
+      await registrarRespostaReativacao({ tenantId, telefone: sessao });
     }
 
-    const resultado = await processar(sessao, mensagem, canal);
+    let resultado;
+    if (req.tenant && req.tenant.flowSource === 'dynamic') {
+      resultado = await processFlow(req.tenant.id, sessao, mensagem, canal);
+    } else {
+      resultado = await processar(sessao, mensagem, canal);
+    }
 
     await sessionManager.updateSession(sessao, {
       mensagensEnviadas: (sessAntes.mensagensEnviadas || 0) + 1,
@@ -189,15 +230,30 @@ app.post('/webhook', async (req, res) => {
 });
 
 // Health check para Railway
-app.get('/health', (_req, res) => {
+app.get('/health', async (_req, res) => {
+  let status = 'ok';
+  let dbStatus = !!process.env.DATABASE_URL;
+
+  if (process.env.STORAGE_ADAPTER === 'postgres') {
+    try {
+      const { getPrisma } = require('./src/infra/db');
+      await getPrisma().$queryRaw`SELECT 1`;
+      dbStatus = 'connected';
+    } catch {
+      dbStatus = 'disconnected';
+      status = 'degraded';
+    }
+  }
+
   const payload = {
-    status: 'ok',
+    status,
     env: {
       storage: process.env.STORAGE_ADAPTER || 'memory',
-      database: !!process.env.DATABASE_URL,
+      database: dbStatus,
       redis: !!process.env.REDIS_URL,
       adminToken: !!process.env.ADMIN_TOKEN,
       telegramToken: !!process.env.TELEGRAM_TOKEN,
+      jwtSecret: !!process.env.JWT_SECRET,
     },
   };
   if (!process.env.ADMIN_TOKEN) payload._setup = { adminToken: _adminToken };
@@ -222,6 +278,7 @@ function adminAuth(req, res, next) {
 // Tenant padrão fixo gerado deterministicamente do nome do app (UUID v5-like)
 const DEFAULT_TENANT_FALLBACK = process.env.DEFAULT_TENANT_ID || 'a0000000-0000-0000-0000-000000000001';
 
+// ── Legacy admin API routes (backward compatible, uses x-admin-token) ────────
 app.use('/api', adminAuth, createRevenueRouter({
   resolveTenantId: (req) => req.headers['x-tenant-id'] || global._currentTenantId || DEFAULT_TENANT_FALLBACK,
 }));
@@ -266,14 +323,29 @@ app.get('/admin/sessions', adminAuth, async (_req, res) => {
 if (process.env.STORAGE_ADAPTER === 'postgres' && process.env.REDIS_URL) {
   startWorker();
   console.log('[queue] BullMQ worker iniciado');
+} else if (process.env.STORAGE_ADAPTER === 'postgres') {
+  console.log('[queue] REDIS_URL não configurado — worker desativado');
+}
 
+// Reactivation cron — only needs Prisma (PostgreSQL), not Redis
+if (process.env.STORAGE_ADAPTER === 'postgres') {
   cron.schedule('0 * * * *', () => {
     console.log('[cron] rodando reativacao de abandonos');
     runReativacao().catch(err => console.error('[cron] reativacao error:', err.message));
   });
   console.log('[cron] reativacao de abandonos agendada (a cada hora)');
-} else if (process.env.STORAGE_ADAPTER === 'postgres') {
-  console.log('[queue] REDIS_URL não configurado — worker e cron desativados');
+}
+
+// Abandonment detection scanner — runs independently of webhooks
+startAbandonmentScanner();
+
+// Billing enforcement — daily at midnight
+if (process.env.STORAGE_ADAPTER === 'postgres') {
+  cron.schedule('0 0 * * *', () => {
+    console.log('[cron] rodando billing enforcement');
+    runBillingEnforcement().catch(err => console.error('[cron] billing error:', err.message));
+  });
+  console.log('[billing] enforcement agendado (diário à meia-noite)');
 }
 
 // JSON error handler (Express 5 — deve ser registrado antes de listen)
@@ -303,6 +375,12 @@ async function start() {
     console.log(`Servidor rodando na porta ${PORT}`);
     console.log(`Storage adapter: ${process.env.STORAGE_ADAPTER || 'memory'}`);
   });
+
+  // ── Start SLA ticker (only for postgres — needs Prisma + tenants) ─────────
+  if (process.env.STORAGE_ADAPTER === 'postgres') {
+    startSLATicker();
+    console.log('[sla] SLA ticker iniciado (intervalo: 60s)');
+  }
 }
 
 start();

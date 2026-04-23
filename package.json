@@ -15,7 +15,8 @@
     "test": "jest --runInBand",
     "build": "npx prisma generate",
     "postinstall": "npx prisma generate",
-    "start": "node server.js"
+    "start": "node server.js",
+    "seed:demo": "node prisma/seed-demo.js"
   },
   "keywords": [],
   "author": "",
@@ -25,11 +26,13 @@
     "@neondatabase/serverless": "^1.1.0",
     "@prisma/adapter-neon": "^7.7.0",
     "@prisma/client": "^5.22.0",
+    "bcryptjs": "^3.0.3",
     "bullmq": "^5.75.2",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "ioredis": "^5.10.1",
+    "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.2.1",
     "prisma": "^5.22.0",
     "socket.io": "^4.8.3",

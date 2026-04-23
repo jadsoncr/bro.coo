@@ -120,7 +120,8 @@ model Tenant {
   whatsappVerifyToken String? @map("whatsapp_verify_token")
   whatsappStatus  String   @default("nao_configurado") @map("whatsapp_status") // nao_configurado | configurado | ativo
   billingStatus   String   @default("active") @map("billing_status") // active | past_due | suspended | canceled
-  billingDueDate  DateTime? @map("billing_due_date") // data em que billingStatus mudou para past_due
+  billingDueDate  DateTime? @map("billing_due_date")
+  segmentos       Json?    @default("[]") // [{nome, valorMin, valorMax, ticketMedio, taxaConversao}]
   criadoEm        DateTime @default(now()) @map("criado_em")
 
   leads    Lead[]

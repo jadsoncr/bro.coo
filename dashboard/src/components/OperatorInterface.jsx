@@ -133,6 +133,30 @@ function messageOriginClass(direcao) {
   return '';
 }
 
+function humanContext(lead, valor, mins) {
+  const seg = lead.segmento ? lead.segmento.charAt(0).toUpperCase() + lead.segmento.slice(1) : 'Lead';
+  const intencaoMap = { contratar: 'quer contratar', informacao: 'busca informação', cliente: 'já é cliente', suporte: 'precisa de suporte' };
+  const intencao = intencaoMap[lead.intencao] || '';
+  const valorStr = valor > 0 ? `R$ ${valor.toLocaleString('pt-BR')}` : '';
+
+  if (lead.activityStatus === 'sem_resposta' && valor > 0) {
+    return `${seg} ${intencao} e parou de responder. Risco de perder ${valorStr} se não agir em ${Math.max(0, 30 - mins)}min.`;
+  }
+  if (lead.activityStatus === 'aguardando_cliente') {
+    return `Aguardando resposta do cliente. ${valorStr ? `Valor potencial: ${valorStr}.` : ''} Fazer follow-up se não responder.`;
+  }
+  if (lead.activityStatus === 'follow_up') {
+    return `Follow-up pendente. ${seg} ${intencao}. ${valorStr ? `${valorStr} em jogo.` : ''}`;
+  }
+  if (lead.estagio === 'proposta' || lead.estagio === 'negociacao') {
+    return `${seg} em fase de ${lead.estagio}. ${valorStr ? `${valorStr} potencial.` : ''} ${proximoPasso(lead.estagio)}.`;
+  }
+  if (lead.estagio === 'novo') {
+    return `Novo contato. ${seg} ${intencao}. ${proximoPasso('novo')}.`;
+  }
+  return `${seg} ${intencao}. ${proximoPasso(lead.estagio || 'novo')}. ${valorStr ? `Valor: ${valorStr}.` : ''}`;
+}
+
 export default function OperatorInterface({ tenantId }) {
   // Filters
   const [stageFilter, setStageFilter] = useState('');
@@ -405,30 +429,39 @@ export default function OperatorInterface({ tenantId }) {
         </div>
 
         <div className="op-queue-groups">
-          <button
-            type="button"
-            className={`op-queue-btn op-queue-critico ${slaFilter === 'atrasado' ? 'op-queue-active' : ''}`}
-            onClick={() => handleQueueClick('atrasado')}
-          >
-            <span>🔥 Críticos ({slaCounts.atrasado})</span>
+          <button type="button" className={`op-queue-btn op-queue-critico ${slaFilter === 'atrasado' ? 'op-queue-active' : ''}`} onClick={() => handleQueueClick('atrasado')}>
+            <span>🔥 Agir agora ({slaCounts.atrasado})</span>
             <strong>{moneyFmt.format(slaValues.atrasado)}</strong>
           </button>
-          <button
-            type="button"
-            className={`op-queue-btn op-queue-risco ${slaFilter === 'atencao' ? 'op-queue-active' : ''}`}
-            onClick={() => handleQueueClick('atencao')}
-          >
+          <button type="button" className={`op-queue-btn op-queue-risco ${slaFilter === 'atencao' ? 'op-queue-active' : ''}`} onClick={() => handleQueueClick('atencao')}>
             <span>⚠️ Em risco ({slaCounts.atencao})</span>
             <strong>{moneyFmt.format(slaValues.atencao)}</strong>
           </button>
-          <button
-            type="button"
-            className={`op-queue-btn op-queue-novos ${slaFilter === 'dentro' ? 'op-queue-active' : ''}`}
-            onClick={() => handleQueueClick('dentro')}
-          >
+          <button type="button" className={`op-queue-btn op-queue-novos ${slaFilter === 'dentro' ? 'op-queue-active' : ''}`} onClick={() => handleQueueClick('dentro')}>
             <span>⏳ Novos ({slaCounts.dentro})</span>
             <strong>{moneyFmt.format(slaValues.dentro)}</strong>
           </button>
+        </div>
+
+        {/* Activity-based smart filters */}
+        <div className="op-queue-groups" style={{ marginTop: 8 }}>
+          {[
+            { key: 'aguardando_cliente', icon: '⏳', label: 'Aguardando' },
+            { key: 'follow_up', icon: '📞', label: 'Follow-up' },
+            { key: 'sem_resposta', icon: '🔴', label: 'Sem resposta' },
+            { key: 'em_negociacao', icon: '💼', label: 'Negociação' },
+          ].map(q => {
+            const count = leads.filter(l => l.activityStatus === q.key && !l.statusFinal).length;
+            if (count === 0) return null;
+            return (
+              <button key={q.key} type="button"
+                className={`op-queue-btn ${activityFilter === q.key ? 'op-queue-active' : ''}`}
+                style={{ fontSize: 11, padding: '6px 8px' }}
+                onClick={() => setActivityFilter(prev => prev === q.key ? '' : q.key)}>
+                <span>{q.icon} {q.label} ({count})</span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="op-subfilters">
@@ -507,6 +540,7 @@ export default function OperatorInterface({ tenantId }) {
                   {lead.slaStatus === 'atrasado' && valor > 0 && (
                     <small className="lead-risco">🚨 {moneyFmt.format(valor)} em risco</small>
                   )}
+                  <small style={{ color: '#2563eb', fontSize: 10 }}>→ {proximoPasso(lead.estagio)}</small>
                 </span>
               </button>
             );
@@ -547,6 +581,16 @@ export default function OperatorInterface({ tenantId }) {
                   )}
                   <span className="op-tempo-sem-resposta">⏱ {mins}min sem resposta</span>
                   <span className="op-proximo-passo">→ {proximoPasso(selectedLead.estagio)}</span>
+                </div>
+              </div>
+
+              {/* Human context — plain language */}
+              <div className="op-context-human" style={{ background: isAtrasado ? '#fef2f2' : '#f0f9ff', border: `1px solid ${isAtrasado ? '#fecaca' : '#bfdbfe'}`, borderRadius: 8, padding: 12, margin: '8px 0' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: isAtrasado ? '#991b1b' : '#1e40af', marginBottom: 4 }}>
+                  {isAtrasado ? '🚨 Ação urgente' : '→ Próximo passo'}
+                </div>
+                <div style={{ fontSize: 12, color: '#374151' }}>
+                  {humanContext(selectedLead, valor, mins)}
                 </div>
               </div>
 

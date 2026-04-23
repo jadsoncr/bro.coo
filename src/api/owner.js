@@ -108,6 +108,79 @@ router.get('/alerts', async (req, res) => {
   }
 });
 
+// GET /owner/team — list operators for tenant
+router.get('/team', async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const users = await prisma.user.findMany({
+      where: { tenantId: req.tenantId },
+      select: { id: true, nome: true, email: true, role: true, ativo: true, criadoEm: true },
+      orderBy: { criadoEm: 'asc' },
+    });
+    return res.json({ users });
+  } catch (err) {
+    console.error('[owner] GET /team error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// POST /owner/team — create operator
+router.post('/team', async (req, res) => {
+  try {
+    const { nome, email, senha } = req.body;
+    if (!nome || !email || !senha) return res.status(400).json({ error: 'Nome, email e senha são obrigatórios' });
+
+    const prisma = getPrisma();
+    const bcrypt = require('bcryptjs');
+    const senhaHash = await bcrypt.hash(senha, 10);
+
+    const user = await prisma.user.create({
+      data: { tenantId: req.tenantId, nome, email, senhaHash, role: 'OPERATOR', ativo: true },
+      select: { id: true, nome: true, email: true, role: true, ativo: true },
+    });
+    return res.json({ ok: true, user });
+  } catch (err) {
+    if (err.message.includes('Unique constraint')) return res.status(400).json({ error: 'Email já cadastrado neste tenant' });
+    console.error('[owner] POST /team error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// PATCH /owner/team/:id — toggle operator active status
+router.patch('/team/:id', async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const user = await prisma.user.findFirst({ where: { id: req.params.id, tenantId: req.tenantId } });
+    if (!user) return res.status(404).json({ error: 'Usuário não encontrado' });
+
+    const updated = await prisma.user.update({
+      where: { id: req.params.id },
+      data: { ativo: !user.ativo },
+      select: { id: true, nome: true, email: true, role: true, ativo: true },
+    });
+    return res.json({ ok: true, user: updated });
+  } catch (err) {
+    console.error('[owner] PATCH /team/:id error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// GET /owner/flow/nodes — flow tree for config page
+router.get('/flow/nodes', async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const flow = await prisma.flow.findFirst({
+      where: { tenantId: req.tenantId, ativo: true },
+      include: { nodes: { orderBy: { ordem: 'asc' } } },
+    });
+    if (!flow) return res.json({ nodes: [] });
+    return res.json({ nodes: flow.nodes });
+  } catch (err) {
+    console.error('[owner] GET /flow/nodes error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
 // GET /owner/tenant/config — tenant configuration
 router.get('/tenant/config', async (req, res) => {
   try {
@@ -139,6 +212,15 @@ router.patch('/tenant/config', async (req, res) => {
     }
 
     const tenant = await updateTenantConfig(req.tenantId, req.body);
+
+    // Update segmentos if provided
+    if (req.body.segmentos !== undefined) {
+      const prisma = getPrisma();
+      await prisma.tenant.update({
+        where: { id: req.tenantId },
+        data: { segmentos: req.body.segmentos },
+      });
+    }
 
     // Also update slaContratoHoras directly via Prisma if provided
     if (req.body.slaContratoHoras !== undefined) {

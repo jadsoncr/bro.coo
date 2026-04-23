@@ -6,6 +6,7 @@ import LoginPage from './components/LoginPage.jsx';
 import ConfigPage from './components/ConfigPage.jsx';
 import RegisterPage from './components/RegisterPage.jsx';
 import WelcomePage from './components/WelcomePage.jsx';
+import OnboardingWizard from './components/OnboardingWizard.jsx';
 import BillingBanner from './components/BillingBanner.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import {
@@ -102,9 +103,7 @@ export default function App() {
       <div>
         <LoginPage onLogin={handleLogin} />
         <div style={{ textAlign: 'center', padding: '10px' }}>
-          <button className="secondary" type="button" onClick={() => setView('register')} style={{ fontSize: 13 }}>
-            Criar conta
-          </button>
+          <button className="secondary" type="button" onClick={() => setView('onboarding')} style={{ fontSize: 13 }}>Criar conta</button>
         </div>
       </div>
     );
@@ -115,11 +114,17 @@ export default function App() {
       <div>
         <RegisterPage onRegistered={() => { handleLogin(); setView('welcome'); }} />
         <div style={{ textAlign: 'center', padding: '10px' }}>
-          <button className="secondary" type="button" onClick={() => setView('login')} style={{ fontSize: 13 }}>
-            Já tenho conta
-          </button>
+          <button className="secondary" type="button" onClick={() => setView('login')} style={{ fontSize: 13 }}>Já tenho conta</button>
+          <span style={{ margin: '0 8px', color: '#9ca3af' }}>|</span>
+          <button className="secondary" type="button" onClick={() => setView('onboarding')} style={{ fontSize: 13 }}>Setup guiado</button>
         </div>
       </div>
+    );
+  }
+
+  if (view === 'onboarding') {
+    return (
+      <OnboardingWizard onComplete={() => { handleLogin(); setView('welcome'); }} />
     );
   }
 

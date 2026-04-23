@@ -6,6 +6,7 @@ import {
   getOwnerConfig,
   getOwnerLeads,
   getOwnerCasos,
+  getOperatorLeads,
   getToken,
 } from '../lib/api.js';
 
@@ -163,6 +164,9 @@ export default function OwnerDashboard({ tenantId, onNavigateOperator }) {
         </section>
       )}
 
+      {/* Top 3 priority actions */}
+      <PriorityActions tenantId={tenantId} onNavigateOperator={onNavigateOperator} />
+
       {/* Pipeline */}
       {metrics?.pipeline && metrics.pipeline.length > 0 && (
         <section className="panel owner-pipeline">
@@ -282,5 +286,50 @@ export default function OwnerDashboard({ tenantId, onNavigateOperator }) {
       </section>
 
     </main>
+  );
+}
+
+// ═══ Top 3 Priority Actions ═══
+function PriorityActions({ tenantId, onNavigateOperator }) {
+  const [leads, setLeads] = useState([]);
+
+  useEffect(() => {
+    getOperatorLeads({}, tenantId).then(data => {
+      const active = (data.leads || [])
+        .filter(l => !l.statusFinal && l.estagio !== 'convertido' && l.estagio !== 'perdido')
+        .sort((a, b) => {
+          const prioW = { QUENTE: 0, MEDIO: 1, FRIO: 2 };
+          if ((prioW[a.prioridade] ?? 9) !== (prioW[b.prioridade] ?? 9)) return (prioW[a.prioridade] ?? 9) - (prioW[b.prioridade] ?? 9);
+          return (b.valorLead || b.valorEstimado || 0) - (a.valorLead || a.valorEstimado || 0);
+        })
+        .slice(0, 3);
+      setLeads(active);
+    }).catch(() => {});
+  }, [tenantId]);
+
+  if (leads.length === 0) return null;
+
+  const passos = { novo: 'Assumir', atendimento: 'Qualificar', qualificado: 'Enviar proposta', proposta: 'Negociar', negociacao: 'Converter' };
+
+  return (
+    <section className="panel" style={{ marginTop: 12 }}>
+      <div className="section-title"><span>Ações prioritárias</span></div>
+      {leads.map((l, i) => (
+        <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: i < leads.length - 1 ? '1px solid #f3f4f6' : 'none' }}>
+          <span style={{ fontSize: 18, width: 28, textAlign: 'center' }}>{i === 0 ? '🔥' : i === 1 ? '⚠️' : '🔵'}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{l.nome || l.telefone || 'Lead'}</div>
+            <div style={{ fontSize: 11, color: '#6b7280' }}>
+              {l.segmento || '—'} · {money(l.valorLead || l.valorEstimado || 0)} · {passos[l.estagio] || 'Atender'}
+            </div>
+          </div>
+          {onNavigateOperator && (
+            <button type="button" style={{ fontSize: 11, padding: '4px 10px' }} onClick={onNavigateOperator}>
+              {passos[l.estagio] || 'Atender'} →
+            </button>
+          )}
+        </div>
+      ))}
+    </section>
   );
 }

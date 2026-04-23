@@ -263,6 +263,7 @@ async function getTenantConfig(tenantId) {
   // Billing info
   base.billingStatus = tenant.billingStatus || 'active';
   base.billingDueDate = tenant.billingDueDate || null;
+  base.segmentosEstruturados = tenant.segmentos || [];
   return base;
 }
 

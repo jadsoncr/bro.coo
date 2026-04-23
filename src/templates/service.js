@@ -40,7 +40,15 @@ async function createTenantFromTemplate({
 
   const prisma = getPrisma();
 
-  // 1. Create tenant
+  // 1. Create tenant with structured segmentos from template
+  const segmentosEstruturados = template.segmentos.map(seg => ({
+    nome: seg,
+    valorMin: template.valores[seg]?.min || 1000,
+    valorMax: template.valores[seg]?.max || 10000,
+    ticketMedio: template.valores[seg]?.default || template.financeiro.ticketMedio,
+    taxaConversao: template.financeiro.taxaConversao,
+  }));
+
   const tenant = await prisma.tenant.create({
     data: {
       nome,
@@ -56,6 +64,7 @@ async function createTenantFromTemplate({
       moeda: moeda || template.financeiro.moeda,
       moedaBase: moeda || template.financeiro.moeda,
       flowSource: 'dynamic',
+      segmentos: segmentosEstruturados,
     },
   });
 

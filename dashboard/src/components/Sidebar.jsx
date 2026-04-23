@@ -6,6 +6,7 @@ const MENU_ITEMS = {
     { key: 'owner', icon: '📊', label: 'Dashboard' },
     { key: 'operator', icon: '💬', label: 'Operação' },
     { key: 'config', icon: '⚙️', label: 'Configurações' },
+    { key: 'onboarding', icon: '🚀', label: 'Novo Cliente' },
   ],
   OWNER: [
     { key: 'owner', icon: '📊', label: 'Dashboard' },

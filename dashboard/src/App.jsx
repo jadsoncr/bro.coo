@@ -157,6 +157,8 @@ export default function App() {
         return <OperatorInterface tenantId={userRole === 'MASTER' ? activeTenantId : null} />;
       case 'config':
         return <ConfigPage tenantId={userRole === 'MASTER' ? activeTenantId : null} />;
+      case 'onboarding':
+        return <OnboardingWizard onComplete={() => { setView('master'); }} />;
       default:
         return <OwnerDashboard tenantId={null} onNavigateOperator={() => setView('operator')} />;
     }

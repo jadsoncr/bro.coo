@@ -372,6 +372,15 @@ app.use((err, req, res, _next) => {
   return res.status(500).json({ error: err.message || 'Erro interno.' });
 });
 
+// ── Serve dashboard static files in production ──────────────────────────────
+const path = require('path');
+const dashboardDist = path.join(__dirname, 'dashboard', 'dist');
+app.use(express.static(dashboardDist));
+// SPA fallback — any route not matched by API returns index.html
+app.get('{*path}', (_req, res) => {
+  res.sendFile(path.join(dashboardDist, 'index.html'));
+});
+
 const PORT = process.env.PORT || 3000;
 const httpServer = http.createServer(app);
 initSocket(httpServer);

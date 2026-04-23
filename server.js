@@ -104,6 +104,20 @@ async function sendTelegram(chat_id, text) {
 const app = express();
 app.use(express.json());
 
+// Debug endpoint — always works, no dependencies
+app.get('/debug', (_req, res) => {
+  res.json({
+    ok: true,
+    node: process.version,
+    env: {
+      DATABASE_URL: !!process.env.DATABASE_URL,
+      STORAGE_ADAPTER: process.env.STORAGE_ADAPTER || 'not set',
+      JWT_SECRET: !!process.env.JWT_SECRET,
+      ADMIN_TOKEN: !!process.env.ADMIN_TOKEN,
+    },
+  });
+});
+
 // ── New SaaS route groups (JWT-based, req.tenantId from token) ──────────────
 // These routes use JWT auth — they NEVER touch global._currentTenantId
 app.use('/auth', authRouter);

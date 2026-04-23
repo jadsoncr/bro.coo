@@ -181,43 +181,105 @@ router.get('/flow/nodes', async (req, res) => {
   }
 });
 
-// PATCH /owner/flow/nodes/:estado — edit node message/options/keywords
+// PATCH /owner/flow/nodes/:estado — edit node (override or direct)
 router.patch('/flow/nodes/:estado', async (req, res) => {
   try {
     const prisma = getPrisma();
-    const flow = await prisma.flow.findFirst({ where: { tenantId: req.tenantId, ativo: true } });
+    const flow = await prisma.flow.findFirst({
+      where: { tenantId: req.tenantId, ativo: true },
+      include: { nodes: { select: { estado: true } } },
+    });
     if (!flow) return res.status(404).json({ error: 'Fluxo não encontrado' });
 
-    const node = await prisma.node.findFirst({ where: { flowId: flow.id, estado: req.params.estado } });
-    if (!node) return res.status(404).json({ error: 'Node não encontrado' });
-
     const { mensagem, opcoes, config } = req.body;
-    const data = {};
-    if (mensagem !== undefined) data.mensagem = mensagem;
-    if (opcoes !== undefined) {
-      // Validate: all proxEstado must exist in the flow
-      const allEstados = new Set((await prisma.node.findMany({ where: { flowId: flow.id }, select: { estado: true } })).map(n => n.estado));
+    const estado = req.params.estado;
+
+    // Validate proxEstado if opcoes provided
+    if (opcoes) {
+      // Get all valid estados (from DB nodes + template)
+      const dbEstados = new Set(flow.nodes.map(n => n.estado));
+      let templateEstados = new Set();
+      try {
+        const { getTemplate } = require('../templates/service');
+        const tmpl = getTemplate(flow.config?.tipo);
+        if (tmpl?.nodes) templateEstados = new Set(tmpl.nodes.map(n => n.estado));
+      } catch { /* no template */ }
+      const allEstados = new Set([...dbEstados, ...templateEstados]);
+
       for (const op of opcoes) {
         if (op.proxEstado && !allEstados.has(op.proxEstado)) {
           return res.status(400).json({ error: `proxEstado "${op.proxEstado}" não existe no fluxo` });
         }
       }
-      data.opcoes = opcoes;
-    }
-    if (config !== undefined) {
-      data.opcoes = node.opcoes; // preserve opcoes if only config changes
-      // Merge config into opcoes metadata (stored in node for now)
     }
 
-    const updated = await prisma.node.update({ where: { id: node.id }, data });
+    // Check if tenant has nodes in DB
+    const hasDbNode = flow.nodes.some(n => n.estado === estado);
 
-    // Invalidate flow cache
+    if (hasDbNode) {
+      // PATH 1: Edit DB node directly (backward compatible for existing tenants)
+      const node = await prisma.node.findFirst({ where: { flowId: flow.id, estado } });
+      const data = {};
+      if (mensagem !== undefined) data.mensagem = mensagem;
+      if (opcoes !== undefined) data.opcoes = opcoes;
+      const updated = await prisma.node.update({ where: { id: node.id }, data });
+
+      const { invalidateAll } = require('../flow/cache');
+      invalidateAll(req.tenantId);
+      return res.json({ ok: true, node: updated, method: 'direct' });
+    }
+
+    // PATH 2: Save as override (for tenants using base template)
+    const overrideData = {};
+    if (mensagem !== undefined) overrideData.mensagem = mensagem;
+    if (opcoes !== undefined) overrideData.opcoes = opcoes;
+    if (config !== undefined) overrideData.config = config;
+
+    const override = await prisma.flowOverride.upsert({
+      where: { flowId_nodeEstado: { flowId: flow.id, nodeEstado: estado } },
+      create: { tenantId: req.tenantId, flowId: flow.id, nodeEstado: estado, overrides: overrideData },
+      update: { overrides: overrideData },
+    });
+
+    const { invalidateAll } = require('../flow/cache');
+    invalidateAll(req.tenantId);
+    return res.json({ ok: true, override, method: 'override' });
+  } catch (err) {
+    console.error('[owner] PATCH /flow/nodes error:', err.message);
+    return res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// POST /owner/flow/reset/:estado — remove override, revert to base
+router.post('/flow/reset/:estado', async (req, res) => {
+  try {
+    const prisma = getPrisma();
+    const flow = await prisma.flow.findFirst({ where: { tenantId: req.tenantId, ativo: true } });
+    if (!flow) return res.status(404).json({ error: 'Fluxo não encontrado' });
+
+    // Delete override if exists
+    await prisma.flowOverride.deleteMany({
+      where: { flowId: flow.id, nodeEstado: req.params.estado },
+    });
+
     const { invalidateAll } = require('../flow/cache');
     invalidateAll(req.tenantId);
 
-    return res.json({ ok: true, node: updated });
+    // Return the base node
+    const node = await prisma.node.findFirst({ where: { flowId: flow.id, estado: req.params.estado } });
+    if (node) return res.json({ ok: true, node, source: 'db' });
+
+    // Try template base
+    try {
+      const { getTemplate } = require('../templates/service');
+      const tmpl = getTemplate(flow.config?.tipo);
+      const baseNode = tmpl?.nodes?.find(n => n.estado === req.params.estado);
+      if (baseNode) return res.json({ ok: true, node: baseNode, source: 'template' });
+    } catch { /* no template */ }
+
+    return res.json({ ok: true, node: null, source: 'not_found' });
   } catch (err) {
-    console.error('[owner] PATCH /flow/nodes error:', err.message);
+    console.error('[owner] POST /flow/reset error:', err.message);
     return res.status(500).json({ error: 'Erro interno' });
   }
 });

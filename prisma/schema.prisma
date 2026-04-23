@@ -130,6 +130,7 @@ model Tenant {
   flows    Flow[]
   users    User[]
   casos    Caso[]
+  flowOverrides FlowOverride[]
 
   @@map("tenants")
 }
@@ -226,8 +227,25 @@ model Flow {
   config   Json
   ativo    Boolean @default(true)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id])
-  nodes  Node[]
+  tenant    Tenant         @relation(fields: [tenantId], references: [id])
+  nodes     Node[]
+  overrides FlowOverride[]
 
   @@map("flows")
+}
+
+model FlowOverride {
+  id         String   @id @default(uuid())
+  tenantId   String   @map("tenant_id")
+  flowId     String   @map("flow_id")
+  nodeEstado String   @map("node_estado")
+  overrides  Json
+  criadoEm   DateTime @default(now()) @map("criado_em")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  flow   Flow   @relation(fields: [flowId], references: [id])
+
+  @@unique([flowId, nodeEstado])
+  @@index([tenantId])
+  @@map("flow_overrides")
 }

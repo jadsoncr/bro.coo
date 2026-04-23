@@ -4,6 +4,7 @@ const mockFlowFindFirst = jest.fn();
 jest.mock('../src/infra/db', () => ({
   getPrisma: jest.fn(() => ({
     flow: { findFirst: mockFlowFindFirst },
+    flowOverride: { findMany: jest.fn(async () => []) },
   })),
 }));
 
@@ -18,6 +19,7 @@ const sampleFlow = {
   objetivo: 'leads',
   ativo: true,
   config: {},
+  tenant: { nome: 'Test', flowSource: 'dynamic' },
   nodes: [
     { id: 'n1', flowId: FLOW_ID, estado: 'start', tipo: 'menu', mensagem: 'Olá!', opcoes: [], ordem: 0 },
   ],

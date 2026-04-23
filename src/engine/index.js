@@ -1,6 +1,6 @@
 // src/engine/index.js
-// Barrel export for all engine functions
 const { classifyLead } = require('./classify');
 const { calculatePriority } = require('./priority');
+const { resolveNode, resolveFlow } = require('./resolveNode');
 
-module.exports = { classifyLead, calculatePriority };
+module.exports = { classifyLead, calculatePriority, resolveNode, resolveFlow };
